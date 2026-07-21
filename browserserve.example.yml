@@ -1,0 +1,31 @@
+# browserserve configuration. Every field is optional; defaults shown.
+# Load order: --config flag, then BROWSERSERVE_CONFIG, then ./browserserve.yml.
+
+pool:
+  minReady: 1              # browsers kept launched and ready ahead of demand
+  maxSessions: 10          # hard ceiling of concurrent isolated browsers
+  maxQueue: 10             # clients allowed to wait for a slot before rejection
+  queueTimeoutMs: 30000    # how long a queued client waits
+  warmIdleMs: 300000       # idle warm browsers above minReady are culled after this
+  warmMaxAgeMs: 3600000    # any warm browser is recycled at this age
+
+session:
+  maxSessionMs: 0          # maximum session lifetime; 0 = unlimited
+  memoryMaxMb: 2048        # per-session memory cap (cgroups, Linux); 0 = uncapped
+  tmpfsSizeMb: 512         # size cap for RAM-backed session dirs (Linux)
+  killGraceMs: 5000        # SIGTERM to SIGKILL grace during teardown
+
+pressure:
+  maxCpuPercent: 95        # reject new sessions above this CPU usage
+  maxMemoryPercent: 95     # reject new sessions above this memory usage
+
+chrome:
+  # executablePath: /usr/bin/chromium   # auto-detected when unset
+  transport: pipe          # pipe (default) or port
+  noSandbox: false         # keep the Chromium sandbox on; see docker/seccomp.json
+  extraFlags: []           # appended after the built-in flag set
+  launchTimeoutMs: 30000   # budget for a browser to become CDP-ready
+  maxFrameBytes: 268435456 # cap on a single CDP message
+
+dataDir: .browserserve     # per-session state lives under here
+drainTimeoutMs: 30000      # budget for draining active sessions on shutdown

@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a problem with browserserve
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The `docker run` / config / client code that triggers it.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Output of `browserserve doctor` (especially the isolation tier line),
+        host OS and architecture, Docker version, and how the container is run.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant server logs (they are structured JSON).
+      render: text

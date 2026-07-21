@@ -1,0 +1,14 @@
+{
+  "name": "browserserve-e2e",
+  "private": true,
+  "description": "End-to-end smoke for a running browserserve instance.",
+  "type": "module",
+  "scripts": {
+    "smoke": "tsx smoke.ts"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.61.1",
+    "puppeteer-core": "^24.35.0",
+    "tsx": "^4.21.0"
+  }
+}

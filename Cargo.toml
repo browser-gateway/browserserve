@@ -1,0 +1,68 @@
+[package]
+name = "browserserve"
+version = "0.1.0"
+edition = "2024"
+# MSRV: floor is what the code actually uses (Duration::from_mins/from_hours, 1.91+).
+# CI pins and verifies this in M5.
+rust-version = "1.91"
+authors = ["Monostellar Limited (https://monostellar.com)"]
+license = "MIT OR Apache-2.0"
+description = "Self-hosted browser server: one instance runs and auto-scales isolated Chrome sessions over CDP."
+readme = "README.md"
+homepage = "https://browsergateway.com"
+repository = "https://github.com/browser-gateway/browserserve"
+keywords = ["browser", "chrome", "cdp", "headless", "puppeteer"]
+categories = ["command-line-utilities", "web-programming"]
+publish = false
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+command-fds = { version = "0.3", features = ["tokio"] }
+memchr = "2"
+reflink-copy = "0.1"
+nix = { version = "0.31", features = ["fs", "process", "signal", "resource", "mount"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+subtle = "2"
+sysinfo = "0.39"
+thiserror = "2"
+tokio = { version = "1", features = [
+  "macros",
+  "rt-multi-thread",
+  "process",
+  "signal",
+  "sync",
+  "time",
+  "io-util",
+  "net",
+  "fs",
+] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+tower-http = { version = "0.6", features = ["timeout"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.17"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+
+[lints.rust]
+unreachable_pub = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
