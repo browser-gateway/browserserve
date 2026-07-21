@@ -206,8 +206,13 @@ mod tests {
         assert!(cg.supports_kill());
     }
 
+    // Note: these tests simulate a cgroup with a regular directory. A real
+    // cgroup v2 dir is removable via rmdir even with its interface files
+    // present (kernel-special), but a regular non-empty dir is not — so the
+    // "kill present" and "dir removal" paths are asserted separately here.
+
     #[tokio::test]
-    async fn kill_and_remove_uses_kill_when_present_and_removes_dir() {
+    async fn kill_and_remove_writes_kill_when_present() {
         let tmp = tempfile::tempdir().unwrap();
         let leaf = tmp.path().join("session-y");
         fs::create_dir(&leaf).unwrap();
@@ -215,6 +220,17 @@ mod tests {
         let cg = Cgroup { dir: leaf.clone() };
         let used = cg.kill_and_remove().await;
         assert!(used, "cgroup.kill should be used when present");
-        assert!(!leaf.exists(), "leaf dir should be removed");
+        assert_eq!(fs::read_to_string(leaf.join(KILL)).unwrap(), "1");
+    }
+
+    #[tokio::test]
+    async fn kill_and_remove_deletes_an_empty_leaf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let leaf = tmp.path().join("session-z");
+        fs::create_dir(&leaf).unwrap();
+        let cg = Cgroup { dir: leaf.clone() };
+        let used = cg.kill_and_remove().await;
+        assert!(!used, "no cgroup.kill file means kill was not used");
+        assert!(!leaf.exists(), "an empty leaf must be removed");
     }
 }

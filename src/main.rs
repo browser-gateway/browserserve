@@ -201,8 +201,7 @@ fn run_doctor(
     #[cfg(target_os = "linux")]
     match nix::sys::statvfs::statvfs("/dev/shm") {
         Ok(stat) => {
-            let available_mb =
-                u64::from(stat.blocks_available()) * stat.fragment_size() / (1024 * 1024);
+            let available_mb = stat.blocks_available() * stat.fragment_size() / (1024 * 1024);
             println!("/dev/shm       {available_mb} MiB available");
             if available_mb < 512 {
                 println!("               warning: run the container with --shm-size=1g or larger");

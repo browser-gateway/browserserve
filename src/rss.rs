@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn own_process_tree_has_nonzero_rss() {
-        let pid = std::process::id() as i32;
+        let pid = i32::try_from(std::process::id()).expect("pid fits in i32");
         let rss = tree_rss_bytes(pid).expect("own process must be visible");
         assert!(rss > 0, "self RSS should be positive");
     }
