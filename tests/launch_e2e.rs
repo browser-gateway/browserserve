@@ -27,14 +27,20 @@ fn group_alive(pid: i32) -> bool {
     kill(Pid::from_raw(-pid), None).is_ok()
 }
 
-#[tokio::test]
-#[ignore = "requires a local Chrome installation"]
-async fn launch_ready_teardown_leaves_nothing() {
+/// Resolves a local Chrome and a fresh session dir under `tmp`.
+async fn chrome_and_dirs(tmp: &tempfile::TempDir) -> (std::path::PathBuf, SessionDirs) {
     let executable = find_chrome(None).expect("chrome required for this test");
-    let tmp = tempfile::tempdir().unwrap();
     let dirs = SessionDirs::provision_plain(tmp.path(), uuid::Uuid::new_v4())
         .await
         .unwrap();
+    (executable, dirs)
+}
+
+#[tokio::test]
+#[ignore = "requires a local Chrome installation"]
+async fn launch_ready_teardown_leaves_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (executable, dirs) = chrome_and_dirs(&tmp).await;
 
     let browser = launch(&spec(
         &executable,
@@ -96,11 +102,8 @@ async fn two_sessions_get_disjoint_profiles() {
 #[tokio::test]
 #[ignore = "requires a local Chrome installation"]
 async fn ready_timeout_kills_the_spawned_group() {
-    let executable = find_chrome(None).expect("chrome required for this test");
     let tmp = tempfile::tempdir().unwrap();
-    let dirs = SessionDirs::provision_plain(tmp.path(), uuid::Uuid::new_v4())
-        .await
-        .unwrap();
+    let (executable, dirs) = chrome_and_dirs(&tmp).await;
 
     let result = launch(&spec(
         &executable,

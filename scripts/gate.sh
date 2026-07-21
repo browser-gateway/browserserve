@@ -22,6 +22,10 @@ echo "== deny"
 cargo deny check
 echo "== audit"
 cargo audit
+echo "== unused deps (machete)"
+if command -v cargo-machete >/dev/null 2>&1; then cargo machete; else echo "  SKIPPED — cargo install cargo-machete to enable"; fi
+echo "== duplication (jscpd)"
+if command -v npx >/dev/null 2>&1; then npx --yes jscpd; else echo "  SKIPPED — node/npx not found"; fi
 echo "== test"
 if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run; else cargo test; fi
 echo "== release build"

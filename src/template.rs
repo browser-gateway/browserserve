@@ -54,13 +54,13 @@ pub fn clone_template(template: &Path, dest: &Path, tier: ProfileTier) -> io::Re
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    match tier {
-        ProfileTier::Reflink => reflink_tree(template, dest),
-        _ => copy_tree(template, dest),
-    }
+    let use_reflink = tier == ProfileTier::Reflink;
+    walk_tree(template, dest, use_reflink)
 }
 
-fn reflink_tree(src: &Path, dest: &Path) -> io::Result<()> {
+// One recursive tree walker; `reflink` chooses the per-file copy strategy.
+// Symlinks in a sealed template are intentionally dropped.
+fn walk_tree(src: &Path, dest: &Path, reflink: bool) -> io::Result<()> {
     fs::create_dir_all(dest)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -68,28 +68,19 @@ fn reflink_tree(src: &Path, dest: &Path) -> io::Result<()> {
         let to = dest.join(entry.file_name());
         let meta = entry.metadata()?;
         if meta.is_dir() {
-            reflink_tree(&from, &to)?;
-        } else if meta.is_file() && reflink_copy::reflink_or_copy(&from, &to).is_err() {
-            fs::copy(&from, &to)?;
+            walk_tree(&from, &to, reflink)?;
+        } else if meta.is_file() {
+            copy_file(&from, &to, reflink)?;
         }
-        // symlinks in a sealed template are intentionally dropped
     }
     Ok(())
 }
 
-fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
-    fs::create_dir_all(dest)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dest.join(entry.file_name());
-        let meta = entry.metadata()?;
-        if meta.is_dir() {
-            copy_tree(&from, &to)?;
-        } else if meta.is_file() {
-            fs::copy(&from, &to)?;
-        }
+fn copy_file(from: &Path, to: &Path, reflink: bool) -> io::Result<()> {
+    if reflink && reflink_copy::reflink_or_copy(from, to).is_ok() {
+        return Ok(());
     }
+    fs::copy(from, to)?;
     Ok(())
 }
 

@@ -1,0 +1,11 @@
+{
+  "threshold": 0.5,
+  "minTokens": 50,
+  "minLines": 5,
+  "absolute": true,
+  "silent": true,
+  "reporters": ["console"],
+  "ignore": ["**/target/**", "**/node_modules/**", "**/e2e/**"],
+  "format": ["rust"],
+  "path": ["src", "tests"]
+}

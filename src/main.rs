@@ -63,17 +63,24 @@ async fn main() -> ExitCode {
     })
 }
 
-async fn run_serve(
+fn load_config(
     config_path: Option<&Path>,
     env: &HashMap<String, String>,
-) -> Result<ExitCode, String> {
+) -> Result<config::Loaded, String> {
     let loaded = config::load_from_env(env, config_path).map_err(|e| e.to_string())?;
     if loaded.config.chrome.transport == config::Transport::Port {
         return Err(String::from(
             "chrome.transport: port is not available yet; use pipe",
         ));
     }
-    browserserve::server::serve(loaded).await?;
+    Ok(loaded)
+}
+
+async fn run_serve(
+    config_path: Option<&Path>,
+    env: &HashMap<String, String>,
+) -> Result<ExitCode, String> {
+    browserserve::server::serve(load_config(config_path, env)?).await?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -82,15 +89,9 @@ async fn run_check(
     chrome_override: Option<PathBuf>,
     env: &HashMap<String, String>,
 ) -> Result<ExitCode, String> {
-    let loaded = config::load_from_env(env, config_path).map_err(|e| e.to_string())?;
-    let mut cfg = loaded.config;
+    let mut cfg = load_config(config_path, env)?.config;
     if let Some(path) = chrome_override {
         cfg.chrome.executable_path = Some(path);
-    }
-    if cfg.chrome.transport == config::Transport::Port {
-        return Err(String::from(
-            "chrome.transport: port is not available yet; use pipe",
-        ));
     }
 
     let executable =
