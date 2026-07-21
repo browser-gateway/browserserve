@@ -1,0 +1,188 @@
+name: release-docker
+
+# Signed multi-arch image publish to GHCR. Manual trigger only (rule: images
+# ship from CI intentionally, never a laptop). Reads the version from Cargo.toml
+# and skips if it is already published, unless force is set.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even if this version is already published"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/browserserve
+
+jobs:
+  check:
+    name: Version check
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      should-build: ${{ steps.decide.outputs.should-build }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read version from Cargo.toml
+        id: read
+        run: |
+          v=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Decide whether to build
+        id: decide
+        env:
+          VERSION: ${{ steps.read.outputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "should-build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if docker buildx imagetools inspect "$REGISTRY/$IMAGE_NAME:$VERSION" > /dev/null 2>&1; then
+            echo "::notice title=Skipped::$VERSION already on $REGISTRY/$IMAGE_NAME — bump Cargo.toml or re-run with force=true"
+            echo "should-build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: check
+    if: needs.check.outputs.should-build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build static binary
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+          mkdir -p docker/bin/${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/browserserve docker/bin/${{ matrix.arch }}/browserserve
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Read Chromium checksums
+        id: sums
+        run: |
+          echo "amd64=$(cut -d' ' -f1 docker/checksums/chrome-linux64.sha256)" >> "$GITHUB_OUTPUT"
+          echo "arm64=$(cut -d' ' -f1 docker/checksums/chromium-linux-arm64.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: dbuild
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            CHROMIUM_SHA256_AMD64=${{ steps.sums.outputs.amd64 }}
+            CHROMIUM_SHA256_ARM64=${{ steps.sums.outputs.arm64 }}
+          sbom: true
+          provenance: mode=max
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.dbuild.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge + sign
+    needs: [check, build]
+    if: needs.check.outputs.should-build == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.check.outputs.version }}
+            type=raw,value=latest
+      - name: Create manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+      - name: Inspect merged digest
+        id: inspect
+        run: |
+          DIGEST=$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check.outputs.version }} --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.inspect.outputs.digest }}
+          push-to-registry: true
+      - name: Summary
+        run: |
+          {
+            echo "### browserserve docker release"
+            echo ""
+            echo "**Version**: \`${{ needs.check.outputs.version }}\`"
+            echo "**Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check.outputs.version }}\`"
+            echo "**Tags**: \`${{ needs.check.outputs.version }}\`, \`latest\`"
+            echo "**Digest**: \`${{ steps.inspect.outputs.digest }}\`"
+            echo "**Architectures**: linux/amd64, linux/arm64"
+          } >> "$GITHUB_STEP_SUMMARY"
