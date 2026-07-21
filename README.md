@@ -43,6 +43,34 @@ const browser = await chromium.connectOverCDP("http://localhost:9222");
 
 Every WebSocket connection gets its own isolated browser.
 
+## Why not run Chrome yourself?
+
+You can start Chrome with `--remote-debugging-port=9222` and point a client at it. The difference is what happens when more than one thing connects.
+
+Plain Chrome with a debug port is **one shared browser**. Every client that connects lands in the same browser, shares the same cookies and storage, and can see the same tabs. Two scripts running at once collide: log in on one and you are logged in on the other, and a crash takes down everyone. The debug port also has no authentication, so anyone who can reach it controls the browser.
+
+browserserve gives **each connection its own fresh browser**. Session A and session B have separate cookies, separate storage, separate tabs, and cannot see each other. When a client disconnects, its browser is killed and its profile directory is deleted, so nothing leaks into the next session. On top of that you get a warm pool for instant starts, a limit and queue for concurrency, token authentication, and health endpoints for load balancers.
+
+In short: plain Chrome is one browser you share; browserserve turns a machine into a browser service that hands out many isolated sessions behind one endpoint. If you only ever need a single browser for a single script, plain Chrome (or letting Puppeteer launch its own) is enough. browserserve earns its place the moment you need more than one isolated session at a time, which is the usual case for AI agents, scraping at scale, and shared or multi-tenant workloads.
+
+## How it compares
+
+| | Plain Chrome debug port | headless-shell in a container | Browserless | browserserve |
+|---|---|---|---|---|
+| One isolated browser per connection | No (one shared browser) | No (one shared browser) | Yes | Yes |
+| Killed and wiped on disconnect | No (you manage it) | No | Yes | Yes |
+| Warm pool for instant starts | No | No | No (preboot deprecated) | Yes |
+| Concurrency limit + queue | No | No | Yes | Yes |
+| Token authentication | No | No | Yes | Yes |
+| Health / pressure endpoints | No | No | Yes | Yes |
+| Per-session kernel memory cap | No | No | No | Yes, where the host allows it |
+| Runtime | Chrome only | Chrome only | Node.js | Single static binary |
+| License | n/a | permissive | SSPL | MIT or Apache-2.0 |
+
+Notes. "headless-shell in a container" means a bare Chromium build exposing a debug port, such as `chromedp/docker-headless-shell`; it behaves like a single shared browser and does not isolate connections. Browserless is a capable, mature product with per-session isolation, a queue, and auth; the differences that matter here are its SSPL license, its Node.js runtime, and the absence of a built-in warm pool. browserserve is MIT/Apache dual-licensed, ships as one small static binary, and keeps a warm pool by default.
+
+Performance numbers (cold-start, memory per session, sessions per GB, throughput) are measured comparisons and are not published yet. They land with the benchmark suite in a later release; this table covers architecture and features only.
+
 ## Endpoints
 
 | Endpoint | Purpose |
