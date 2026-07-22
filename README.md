@@ -69,7 +69,7 @@ In short: plain Chrome is one browser you share; browserserve turns a machine in
 
 Notes. "headless-shell in a container" means a bare Chromium build exposing a debug port, such as `chromedp/docker-headless-shell`; it behaves like a single shared browser and does not isolate connections. Browserless is a capable, mature product with per-session isolation, a queue, and auth; the differences that matter here are its SSPL license, its Node.js runtime, and the absence of a built-in warm pool. browserserve is MIT/Apache dual-licensed, ships as one small static binary, and keeps a warm pool by default.
 
-Performance numbers (cold-start, memory per session, sessions per GB, throughput) are measured comparisons and are not published yet. They land with the benchmark suite in a later release; this table covers architecture and features only.
+Performance: a same-host baseline comparison (browserserve vs Browserless vs raw Chrome) is in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). In short, browserserve is on par with Browserless on latency, per-session memory (~140 MB — the same Chrome underneath), and throughput, and both pools return to baseline after every session while raw Chrome leaked and crashed. Those numbers are a shared-cloud-host baseline with an honest caveats block; bare-metal, in-region absolutes are future work.
 
 ## Endpoints
 
