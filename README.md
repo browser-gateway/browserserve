@@ -16,6 +16,20 @@
   <a href="https://github.com/browser-gateway/browserserve"><img src="https://img.shields.io/github/stars/browser-gateway/browserserve?style=flat-square&logo=github&logoColor=white" alt="GitHub stars" /></a>
 </p>
 
+<p align="center">
+  <a href="https://browsergateway.com">Website</a>
+  &nbsp;·&nbsp;
+  <a href="#quick-start">Quick start</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/browser-gateway/browserserve/pkgs/container/browserserve">Container image</a>
+  &nbsp;·&nbsp;
+  <a href="docs/BENCHMARKS.md">Benchmarks</a>
+  &nbsp;·&nbsp;
+  <a href="CHANGELOG.md">Changelog</a>
+  &nbsp;·&nbsp;
+  <a href="#sandbox">Sandbox</a>
+</p>
+
 > **Status:** v0.1.0 is published: `ghcr.io/browser-gateway/browserserve:0.1.0` (multi-arch amd64/arm64, SLSA-signed, public). Pre-1.0: flags and configuration may still change between minor versions; the changelog records every change.
 
 An open-source tool by [Monostellar Labs](https://monostellar.com), part of the [browser-gateway](https://github.com/browser-gateway/browser-gateway) open browser infrastructure stack. browserserve is a standalone product and does not require the gateway.
