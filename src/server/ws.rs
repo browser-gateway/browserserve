@@ -18,6 +18,20 @@ fn reject(status: StatusCode, reason: &str, detail: &str) -> Response {
         .into_response()
 }
 
+/// Maps a claim failure to its HTTP status and short reason. Every variant is a
+/// transient capacity/lifecycle condition the client should retry, so all map to
+/// 503 (never 500) — a browser that fails to launch (e.g. the container's
+/// `pids.max` is exhausted) is the server being at capacity, not a server bug.
+fn claim_status(e: &ClaimError) -> (StatusCode, &'static str) {
+    let reason = match e {
+        ClaimError::QueueFull { .. } => "queue_full",
+        ClaimError::QueueTimeout { .. } => "queue_timeout",
+        ClaimError::Closed => "draining",
+        ClaimError::Launch { .. } => "launch_failed",
+    };
+    (StatusCode::SERVICE_UNAVAILABLE, reason)
+}
+
 /// `WS /`: one connection, one isolated browser.
 pub async fn ws_handler(
     State(state): State<Arc<AppState>>,
@@ -47,29 +61,9 @@ pub async fn ws_handler(
 
     let mut claimed = match state.pool.claim().await {
         Ok(claimed) => claimed,
-        Err(e @ ClaimError::QueueFull { .. }) => {
-            return reject(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "queue_full",
-                &e.to_string(),
-            );
-        }
-        Err(e @ ClaimError::QueueTimeout { .. }) => {
-            return reject(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "queue_timeout",
-                &e.to_string(),
-            );
-        }
-        Err(e @ ClaimError::Closed) => {
-            return reject(StatusCode::SERVICE_UNAVAILABLE, "draining", &e.to_string());
-        }
-        Err(e @ ClaimError::Launch { .. }) => {
-            return reject(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "launch_failed",
-                &e.to_string(),
-            );
+        Err(e) => {
+            let (status, reason) = claim_status(&e);
+            return reject(status, reason, &e.to_string());
         }
     };
 
@@ -96,4 +90,31 @@ pub async fn ws_handler(
                 pool.destroy(claimed).await;
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClaimError, StatusCode, claim_status};
+
+    #[test]
+    fn every_claim_failure_is_503_never_500() {
+        let cases = [
+            ClaimError::QueueFull { max_queue: 1 },
+            ClaimError::QueueTimeout { waited_ms: 1 },
+            ClaimError::Closed,
+            ClaimError::Launch {
+                message: "pids.max exhausted".into(),
+            },
+        ];
+        for e in &cases {
+            assert_eq!(claim_status(e).0, StatusCode::SERVICE_UNAVAILABLE, "{e}");
+        }
+        assert_eq!(
+            claim_status(&ClaimError::Launch {
+                message: String::new()
+            })
+            .1,
+            "launch_failed"
+        );
+    }
 }

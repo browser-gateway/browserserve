@@ -23,4 +23,9 @@ All notable changes to browserserve are documented here. The format is based on
   that keeps Chromium's sandbox enabled.
 - `browserserve check` and `browserserve doctor` diagnostics.
 
+### Fixed
+- A browser that cannot launch (for example when the container's thread/PID
+  ceiling is reached) now returns `503 Service Unavailable`, not `500` — the
+  server is at capacity, a condition clients should retry, not a server fault.
+
 [Unreleased]: https://github.com/browser-gateway/browserserve/commits/main
