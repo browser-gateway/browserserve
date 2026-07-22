@@ -30,10 +30,6 @@
   <a href="#sandbox">Sandbox</a>
 </p>
 
-> **Status:** v0.1.0 is published: `ghcr.io/browser-gateway/browserserve:0.1.0` (multi-arch amd64/arm64, SLSA-signed, public). Pre-1.0: flags and configuration may still change between minor versions; the changelog records every change.
-
-An open-source tool by [Monostellar Labs](https://monostellar.com), part of the [browser-gateway](https://github.com/browser-gateway/browser-gateway) open browser infrastructure stack. browserserve is a standalone product and does not require the gateway.
-
 ## Why
 
 Running headless Chrome in production is an operations problem: sessions leak state into each other, memory grows until the box dies, zombie processes pile up, and cold starts cost seconds. browserserve packages the fixes into a single deployable instance:
