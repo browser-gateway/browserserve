@@ -11,6 +11,7 @@ compile_error!(
 );
 
 pub mod bridge;
+pub mod capacity;
 pub mod chrome;
 pub mod config;
 pub mod factory;

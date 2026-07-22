@@ -37,8 +37,10 @@ pub enum ConfigError {
 pub struct PoolConfig {
     /// Browsers kept launched and ready ahead of demand.
     pub min_ready: u32,
-    /// Hard ceiling of concurrent claimed sessions.
-    pub max_sessions: u32,
+    /// Hard ceiling of concurrent claimed sessions. Unset means auto:
+    /// derived at startup from the host's real limits and a measured browser
+    /// footprint (see `capacity`).
+    pub max_sessions: Option<u32>,
     /// Maximum clients waiting for a session slot before rejection.
     pub max_queue: u32,
     /// How long a queued client waits before rejection, in milliseconds.
@@ -53,7 +55,7 @@ impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             min_ready: 1,
-            max_sessions: 10,
+            max_sessions: None,
             max_queue: 10,
             queue_timeout_ms: 30_000,
             warm_idle_ms: 300_000,
@@ -278,9 +280,9 @@ pub fn load_from_env<S: std::hash::BuildHasher>(
 }
 
 fn validate(config: &RuntimeConfig) -> Result<(), ConfigError> {
-    if config.pool.max_sessions == 0 {
+    if config.pool.max_sessions == Some(0) {
         return Err(ConfigError::Invalid(String::from(
-            "pool.maxSessions must be at least 1",
+            "pool.maxSessions must be at least 1 (or unset for auto)",
         )));
     }
     for (name, value) in [
@@ -324,7 +326,7 @@ mod tests {
     fn defaults_when_no_yaml() {
         let loaded = load(None, &HashMap::new()).unwrap();
         assert_eq!(loaded.config.pool.min_ready, 1);
-        assert_eq!(loaded.config.pool.max_sessions, 10);
+        assert_eq!(loaded.config.pool.max_sessions, None);
         assert_eq!(loaded.config.chrome.transport, Transport::Pipe);
         assert_eq!(loaded.serve.port, 9222);
         assert_eq!(loaded.serve.host, "0.0.0.0");
@@ -334,7 +336,7 @@ mod tests {
     #[test]
     fn empty_yaml_is_defaults() {
         let loaded = load(Some("  \n"), &HashMap::new()).unwrap();
-        assert_eq!(loaded.config.pool.max_sessions, 10);
+        assert_eq!(loaded.config.pool.max_sessions, None);
     }
 
     #[test]
@@ -351,7 +353,7 @@ session:
 dataDir: /var/lib/bgr
 ";
         let loaded = load(Some(yaml), &HashMap::new()).unwrap();
-        assert_eq!(loaded.config.pool.max_sessions, 3);
+        assert_eq!(loaded.config.pool.max_sessions, Some(3));
         assert_eq!(loaded.config.pool.min_ready, 0);
         assert!(loaded.config.chrome.no_sandbox);
         assert_eq!(loaded.config.chrome.transport, Transport::Port);

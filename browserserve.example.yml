@@ -3,7 +3,8 @@
 
 pool:
   minReady: 1              # browsers kept launched and ready ahead of demand
-  maxSessions: 10          # hard ceiling of concurrent isolated browsers
+  # maxSessions: 10        # hard ceiling; unset = auto (derived from the host's
+  #                          # real memory/pids/cpu limits and a measured browser)
   maxQueue: 10             # clients allowed to wait for a slot before rejection
   queueTimeoutMs: 30000    # how long a queued client waits
   warmIdleMs: 300000       # idle warm browsers above minReady are culled after this

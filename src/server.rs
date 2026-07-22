@@ -42,6 +42,9 @@ pub struct AppState {
     pub max_message_bytes: usize,
     /// Resolved isolation tiers for this host.
     pub tiers: crate::linux::tiers::Tiers,
+    /// Where the session ceiling came from: `config`, or the auto-capacity
+    /// constraint that bound (`memory`, `pids`, `cpu`).
+    pub capacity_source: &'static str,
 }
 
 /// Builds the router: probe routes carry an HTTP timeout; the WS route does
@@ -92,11 +95,27 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
 
     let factory = ChromeFactory::new(&config, executable.clone(), tiers.clone());
     factory.prepare_template().await;
+    let (max_sessions, capacity_source) = if let Some(explicit) = config.pool.max_sessions {
+        (explicit, "config")
+    } else {
+        let limits = crate::capacity::probe_host();
+        let cap = crate::capacity::compute(limits, factory.template_footprint());
+        tracing::info!(
+            max_sessions = cap.max_sessions,
+            bound_by = cap.bound_by,
+            mem_ceiling_bytes = limits.mem_ceiling_bytes,
+            pids_max = limits.pids_max,
+            cpus = limits.cpus,
+            measured = factory.template_footprint().is_some(),
+            "auto capacity resolved"
+        );
+        (cap.max_sessions, cap.bound_by)
+    };
     let pool = Pool::new(
         factory.clone(),
         PoolOptions {
             min_ready: config.pool.min_ready as usize,
-            max_sessions: config.pool.max_sessions as usize,
+            max_sessions: max_sessions as usize,
             max_queue: config.pool.max_queue as usize,
             queue_timeout: Duration::from_millis(config.pool.queue_timeout_ms),
             warm_idle: Duration::from_millis(config.pool.warm_idle_ms),
@@ -115,6 +134,7 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         cancel: CancellationToken::new(),
         max_message_bytes: config.chrome.max_frame_bytes,
         tiers,
+        capacity_source,
     });
 
     let bind = format!("{}:{}", loaded.serve.host, loaded.serve.port);

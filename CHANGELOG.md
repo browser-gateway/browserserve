@@ -23,6 +23,16 @@ All notable changes to browserserve are documented here. The format is based on
   that keeps Chromium's sandbox enabled.
 - `browserserve check` and `browserserve doctor` diagnostics.
 
+### Added (unreleased 0.2.0)
+- Auto-capacity: when `pool.maxSessions` is unset, the session ceiling is
+  derived at startup from the host's real limits (cgroup v2 `memory.max` /
+  `pids.max`, total memory, CPU count) and the measured footprint of a browser
+  launched on this host. The result and its binding constraint are logged and
+  reported by `/pressure` (`capacitySource`).
+- Gateway discovery: `/json/version` now carries `Browserserve-Version` and
+  `Browserserve-MaxConcurrent`, letting the browser-gateway router auto-detect a
+  browserserve provider and adopt its capacity.
+
 ### Fixed
 - A browser that cannot launch (for example when the container's thread/PID
   ceiling is reached) now returns `503 Service Unavailable`, not `500` — the

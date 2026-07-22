@@ -86,6 +86,7 @@ pub async fn pressure(State(state): State<Arc<AppState>>) -> Response {
         "cpu": cpu,
         "memory": memory,
         "reason": reason,
+        "capacitySource": state.capacity_source,
         "isolation": state.tiers,
         "date": date,
     }))
@@ -129,6 +130,8 @@ pub async fn json_version(
         "User-Agent": version.user_agent,
         "V8-Version": version.js_version,
         "webSocketDebuggerUrl": ws_url,
+        "Browserserve-Version": env!("CARGO_PKG_VERSION"),
+        "Browserserve-MaxConcurrent": state.pool.stats().max_sessions,
     }))
     .into_response()
 }

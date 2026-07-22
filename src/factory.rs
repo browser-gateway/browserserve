@@ -1,10 +1,11 @@
 //! The pool's session factory: real Chrome launches with tier-aware isolation.
 
+use crate::capacity::SessionFootprint;
 use crate::chrome::{Browser, BrowserVersion, LaunchSpec, force_kill_group, launch, teardown};
 use crate::config::RuntimeConfig;
 use crate::linux::tiers::{MemCapTier, Tiers};
 use crate::pool::SessionFactory;
-use crate::rss::tree_rss_bytes;
+use crate::rss::{tree_rss_bytes, tree_thread_count};
 use crate::session_dirs::SessionDirs;
 use crate::template;
 use std::path::PathBuf;
@@ -43,6 +44,7 @@ struct FactoryInner {
     tiers: Tiers,
     version: Mutex<Option<BrowserVersion>>,
     template_dir: Mutex<Option<PathBuf>>,
+    footprint: Mutex<Option<SessionFootprint>>,
     #[cfg(target_os = "linux")]
     cgroup_base: Option<PathBuf>,
 }
@@ -78,6 +80,7 @@ impl ChromeFactory {
                 tiers,
                 version: Mutex::new(None),
                 template_dir: Mutex::new(None),
+                footprint: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 cgroup_base,
             }),
@@ -101,6 +104,17 @@ impl ChromeFactory {
             .version
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(version.clone());
+    }
+
+    /// The measured process-tree footprint of the warmed template browser, if
+    /// this host could measure one (Linux with a live template launch).
+    #[must_use]
+    pub fn template_footprint(&self) -> Option<SessionFootprint> {
+        *self
+            .inner
+            .footprint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn template_dir(&self) -> Option<PathBuf> {
@@ -137,6 +151,16 @@ impl ChromeFactory {
         };
         let key = browser_key(&browser.version);
         self.note_version(&browser.version);
+        let measured = SessionFootprint {
+            bytes: tree_rss_bytes(browser.pid).unwrap_or(0),
+            threads: tree_thread_count(browser.pid).unwrap_or(0),
+        };
+        if measured.bytes > 0 || measured.threads > 0 {
+            *inner
+                .footprint
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(measured);
+        }
         teardown(browser, inner.kill_grace).await;
 
         let template = template::template_path(&inner.data_dir, &key);
