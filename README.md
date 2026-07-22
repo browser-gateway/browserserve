@@ -1,12 +1,22 @@
-# browserserve
+<h1 align="center">browserserve</h1>
 
-[![CI](https://github.com/browser-gateway/browserserve/actions/workflows/ci.yml/badge.svg)](https://github.com/browser-gateway/browserserve/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-![forbid unsafe](https://img.shields.io/badge/unsafe-forbidden-success.svg)
+<p align="center">
+  <strong>A self-hosted browser server.</strong>
+  <br />
+  One container runs isolated Chrome sessions over CDP: a warm pool for instant starts, host-measured capacity, per-session resource caps, zero cross-session state.
+  <br />
+  Works with Puppeteer, Playwright, and any CDP client.
+</p>
 
-A self-hosted browser server. One container runs isolated Chrome sessions over CDP: warm pools for instant starts, per-session resource caps, zero cross-session state. Works with Puppeteer, Playwright, and any CDP client.
+<p align="center">
+  <a href="https://github.com/browser-gateway/browserserve/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/browser-gateway/browserserve/ci.yml?style=flat-square&label=CI" alt="CI" /></a>
+  <a href="https://github.com/browser-gateway/browserserve/pkgs/container/browserserve"><img src="https://img.shields.io/badge/ghcr.io-browser--gateway%2Fbrowserserve-blue?style=flat-square&logo=docker&logoColor=white" alt="Container image" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square" alt="License: MIT OR Apache-2.0" /></a>
+  <img src="https://img.shields.io/badge/unsafe-forbidden-success?style=flat-square" alt="forbid unsafe" />
+  <a href="https://github.com/browser-gateway/browserserve"><img src="https://img.shields.io/github/stars/browser-gateway/browserserve?style=flat-square&logo=github&logoColor=white" alt="GitHub stars" /></a>
+</p>
 
-> **Status: pre-release (v0.1.0 unreleased).** The server, warm pool, isolation tiers, and container image are built and tested. Hardening, CI-published binaries, and benchmarks are in progress; APIs and flags may change until v0.1.0.
+> **Status:** v0.1.0 is published: `ghcr.io/browser-gateway/browserserve:0.1.0` (multi-arch amd64/arm64, SLSA-signed, public). Pre-1.0: flags and configuration may still change between minor versions; the changelog records every change.
 
 An open-source tool by [Monostellar Labs](https://monostellar.com), part of the [browser-gateway](https://github.com/browser-gateway/browser-gateway) open browser infrastructure stack. browserserve is a standalone product and does not require the gateway.
 
