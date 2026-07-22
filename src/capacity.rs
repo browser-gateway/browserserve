@@ -78,10 +78,9 @@ pub fn compute(limits: HostLimits, footprint: Option<SessionFootprint>) -> Capac
 /// elsewhere it uses total system memory.
 #[must_use]
 pub fn probe_host() -> HostLimits {
-    let cpus = u32::try_from(
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
-    )
-    .unwrap_or(u32::MAX);
+    let cpus =
+        u32::try_from(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
+            .unwrap_or(u32::MAX);
     HostLimits {
         mem_ceiling_bytes: imp::mem_ceiling_bytes(),
         pids_max: imp::pids_max(),

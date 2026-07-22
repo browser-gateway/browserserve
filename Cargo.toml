@@ -1,6 +1,6 @@
 [package]
 name = "browserserve"
-version = "0.2.0"
+version = "0.1.1"
 edition = "2024"
 # MSRV: floor is what the code actually uses (Duration::from_mins/from_hours, 1.91+).
 # CI pins and verifies this in M5.
