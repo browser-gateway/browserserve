@@ -13,19 +13,26 @@ const CLOSE_BROWSER_GONE: u16 = 1011;
 /// Pumps messages both ways until either side closes, then stops the other
 /// direction. The caller owns session teardown afterwards.
 pub async fn bridge(socket: WebSocket, pipe: CdpPipe) {
-    let (cdp_reader, cdp_writer) = pipe.split();
-    let (ws_sink, ws_stream) = socket.split();
-
-    let mut to_browser = tokio::spawn(pump_client_to_browser(ws_stream, cdp_writer));
-    let mut to_client = tokio::spawn(pump_browser_to_client(cdp_reader, ws_sink));
-
-    tokio::select! {
-        _ = &mut to_browser => to_client.abort(),
-        _ = &mut to_client => to_browser.abort(),
-    }
+    let _ = bridge_reclaimable(socket, pipe).await;
 }
 
-async fn pump_client_to_browser(mut ws: SplitStream<WebSocket>, mut cdp: CdpWriter) {
+/// Like [`bridge`], but returns the CDP pipe when the CLIENT closed (the browser
+/// is still alive, so the caller can run post-session capture over it), or
+/// `None` when the browser closed first (nothing left to capture).
+pub async fn bridge_reclaimable(socket: WebSocket, pipe: CdpPipe) -> Option<CdpPipe> {
+    let (mut reader, mut writer) = pipe.split();
+    let (mut ws_sink, mut ws_stream) = socket.split();
+
+    // Borrowed pumps: whichever side closes, the other future is cancelled but
+    // its half stays owned here, so a client-close leaves the pipe reassemblable.
+    let client_closed = tokio::select! {
+        () = pump_client_to_browser(&mut ws_stream, &mut writer) => true,
+        () = pump_browser_to_client(&mut reader, &mut ws_sink) => false,
+    };
+    client_closed.then(|| CdpPipe::from_halves(reader, writer))
+}
+
+async fn pump_client_to_browser(ws: &mut SplitStream<WebSocket>, cdp: &mut CdpWriter) {
     while let Some(Ok(message)) = ws.next().await {
         let sent = match message {
             Message::Text(text) => cdp.send_raw(text.as_bytes()).await,
@@ -39,7 +46,7 @@ async fn pump_client_to_browser(mut ws: SplitStream<WebSocket>, mut cdp: CdpWrit
     }
 }
 
-async fn pump_browser_to_client(mut cdp: CdpReader, mut ws: SplitSink<WebSocket, Message>) {
+async fn pump_browser_to_client(cdp: &mut CdpReader, ws: &mut SplitSink<WebSocket, Message>) {
     loop {
         let Ok(frame) = cdp.recv_raw().await else {
             let _ = ws

@@ -128,6 +128,13 @@ impl CdpPipe {
         (self.reader, self.writer)
     }
 
+    /// Reassembles a pipe from halves taken by [`CdpPipe::split`], so a bridge
+    /// can hand the transport back for post-session capture.
+    #[must_use]
+    pub fn from_halves(reader: CdpReader, writer: CdpWriter) -> Self {
+        Self { writer, reader }
+    }
+
     /// Sends one CDP message.
     ///
     /// # Errors

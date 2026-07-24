@@ -1,7 +1,10 @@
 //! Probe and discovery handlers.
 
+use crate::profile::payload::ProfilePayload;
+use crate::server::profiles::PROFILE_TTL;
 use crate::server::{AppState, auth};
-use axum::extract::{Query, State};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
@@ -134,4 +137,57 @@ pub async fn json_version(
         "Browserserve-MaxConcurrent": state.pool.stats().max_sessions,
     }))
     .into_response()
+}
+
+/// `POST /v1/profile`: hand off a profile for a coming session and receive a
+/// one-shot token. Bearer-authed; the body size is capped by a route layer.
+pub async fn profile_drop_off(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryMap>,
+    headers: HeaderMap,
+    payload: Result<axum::Json<ProfilePayload>, JsonRejection>,
+) -> Response {
+    if !check_auth(&state, &query, &headers) {
+        return unauthorized();
+    }
+    let Ok(axum::Json(payload)) = payload else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "invalid profile body" })),
+        )
+            .into_response();
+    };
+    match state.profiles.drop_off(payload) {
+        Some(token) => axum::Json(json!({
+            "profileToken": token,
+            "expiresInSec": PROFILE_TTL.as_secs(),
+        }))
+        .into_response(),
+        None => (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(json!({ "error": "profile store at capacity" })),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /v1/profile/{token}`: pick up the captured profile once the session has
+/// finished. Bearer-authed; single-use, returns 404 until the profile is ready.
+pub async fn profile_pick_up(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Query(query): Query<QueryMap>,
+    headers: HeaderMap,
+) -> Response {
+    if !check_auth(&state, &query, &headers) {
+        return unauthorized();
+    }
+    match state.profiles.pick_up(&token) {
+        Some(payload) => axum::Json(payload).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({ "error": "no captured profile for token" })),
+        )
+            .into_response(),
+    }
 }

@@ -6,7 +6,22 @@ All notable changes to browserserve are documented here. The format is based on
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- Profiles: sessions can be launched from a saved profile and captured back at
+  session end. Cookies and localStorage are the portable core (applied over CDP,
+  so they work on any provider); IndexedDB and service workers are moved as
+  on-disk store directories, so they persist across browserserve sessions. A
+  one-shot token channel (`POST /v1/profile`, `GET /v1/profile/{token}`) hands a
+  profile to a `?profileToken=` session and returns the captured state on close.
+  localStorage is read directly from the on-disk LevelDB, so every origin is
+  captured (including cookieless ones); cookie inject uses a drop-only sanitizer
+  that never downgrades security attributes. Validated on macOS and real Linux.
+
+### Changed
+- Chrome launch flags now suppress the crash-restore prompt
+  (`--disable-session-crashed-bubble`, `--hide-crash-restore-bubble`) so a
+  seeded profile directory (which reads as "crashed" after a kill-based
+  teardown) loads without an interstitial.
 
 ## [0.1.1] - 2026-07-22
 

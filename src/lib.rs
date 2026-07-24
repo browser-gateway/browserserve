@@ -19,7 +19,11 @@ pub mod linux;
 pub mod logging;
 pub mod pool;
 pub mod pressure;
+pub mod profile;
 pub mod rss;
 pub mod server;
 pub mod session_dirs;
 pub mod template;
+
+#[cfg(test)]
+mod test_support;

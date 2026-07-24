@@ -5,6 +5,8 @@ use crate::chrome::{Browser, BrowserVersion, LaunchSpec, force_kill_group, launc
 use crate::config::RuntimeConfig;
 use crate::linux::tiers::{MemCapTier, Tiers};
 use crate::pool::SessionFactory;
+use crate::profile::cdp::OriginState;
+use crate::profile::manifest::ManifestEntry;
 use crate::rss::{tree_rss_bytes, tree_thread_count};
 use crate::session_dirs::SessionDirs;
 use crate::template;
@@ -30,6 +32,15 @@ pub struct ChromeSession {
     pub dirs: SessionDirs,
     cgroup: Option<SessionCgroup>,
     monitor: Option<AbortHandle>,
+}
+
+/// The native-layer state captured from a dead session's user-data-dir.
+#[derive(Default)]
+pub struct CapturedNative {
+    /// `IndexedDB` + service-worker files, as a relative-path manifest.
+    pub indexeddb: Vec<ManifestEntry>,
+    /// localStorage for every origin, read from the on-disk `LevelDB`.
+    pub local_storage: Vec<OriginState>,
 }
 
 struct FactoryInner {
@@ -241,6 +252,58 @@ impl SessionFactory for ChromeFactory {
 
     async fn create(&self) -> Result<ChromeSession, String> {
         let dirs = self.provision_dirs().await?;
+        self.launch_session(dirs).await
+    }
+
+    async fn destroy(&self, session: ChromeSession) {
+        let dirs = self.kill_session(session).await;
+        if let Err(e) = dirs.teardown().await {
+            tracing::warn!(error = %e, "session dir teardown failed");
+        }
+    }
+
+    fn is_alive(&self, session: &mut ChromeSession) -> bool {
+        session.browser.is_running()
+    }
+}
+
+impl ChromeFactory {
+    /// Launches a profile-seeded session: clones the template, drops the
+    /// native-layer files (`IndexedDB` / service workers) into the user-data-dir
+    /// before Chrome starts, then launches. An empty manifest is a normal
+    /// fresh session.
+    ///
+    /// # Errors
+    ///
+    /// Fails when dir provisioning, seeding, or the launch fails.
+    pub async fn create_seeded(
+        &self,
+        indexeddb: &[ManifestEntry],
+    ) -> Result<ChromeSession, String> {
+        let dirs = self.provision_dirs().await?;
+        if !indexeddb.is_empty() {
+            let udd = dirs.user_data_dir.clone();
+            let entries = indexeddb.to_vec();
+            match tokio::task::spawn_blocking(move || {
+                crate::profile::manifest::extract_into(&entries, &udd)
+            })
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    let _ = dirs.teardown().await;
+                    return Err(format!("profile seed failed: {e}"));
+                }
+                Err(e) => {
+                    let _ = dirs.teardown().await;
+                    return Err(format!("profile seed task failed: {e}"));
+                }
+            }
+        }
+        self.launch_session(dirs).await
+    }
+
+    async fn launch_session(&self, dirs: SessionDirs) -> Result<ChromeSession, String> {
         let spec = self.launch_spec(&dirs.user_data_dir);
         let browser = match launch(&spec).await {
             Ok(browser) => browser,
@@ -255,10 +318,8 @@ impl SessionFactory for ChromeFactory {
             }
         };
         self.note_version(&browser.version);
-
         let cgroup = self.apply_cgroup(browser.pid);
         let monitor = self.spawn_soft_cap(cgroup.is_some(), browser.pid);
-
         Ok(ChromeSession {
             browser,
             dirs,
@@ -267,28 +328,50 @@ impl SessionFactory for ChromeFactory {
         })
     }
 
-    async fn destroy(&self, session: ChromeSession) {
-        if let Some(monitor) = session.monitor {
+    async fn kill_session(&self, session: ChromeSession) -> SessionDirs {
+        let ChromeSession {
+            browser,
+            dirs,
+            cgroup,
+            monitor,
+        } = session;
+        if let Some(monitor) = monitor {
             monitor.abort();
         }
         // cgroup.kill (when present) SIGKILLs the whole subtree atomically;
         // teardown then reaps the direct child and is the universal fallback.
-        self.destroy_cgroup(session.cgroup).await;
-        let report = teardown(session.browser, self.inner.kill_grace).await;
+        self.destroy_cgroup(cgroup).await;
+        let report = teardown(browser, self.inner.kill_grace).await;
         if !report.reaped {
             tracing::warn!(exit = ?report.exit_status, "browser was not reaped during teardown");
         }
-        if let Err(e) = session.dirs.teardown().await {
+        dirs
+    }
+
+    /// Kills the session, packs its native-layer stores from the still-present
+    /// dir (safe: the process tree is dead), then removes the dir. Returns the
+    /// captured manifest (empty on any failure).
+    pub async fn destroy_capturing_native(&self, session: ChromeSession) -> CapturedNative {
+        let udd = session.dirs.user_data_dir.clone();
+        let dirs = self.kill_session(session).await;
+        let captured = tokio::task::spawn_blocking(move || {
+            let indexeddb = crate::profile::manifest::pack_native(&udd).unwrap_or_default();
+            let local_storage = crate::profile::localstorage::read_local_storage(
+                &udd.join("Default/Local Storage/leveldb"),
+            );
+            CapturedNative {
+                indexeddb,
+                local_storage,
+            }
+        })
+        .await
+        .unwrap_or_default();
+        if let Err(e) = dirs.teardown().await {
             tracing::warn!(error = %e, "session dir teardown failed");
         }
+        captured
     }
 
-    fn is_alive(&self, session: &mut ChromeSession) -> bool {
-        session.browser.is_running()
-    }
-}
-
-impl ChromeFactory {
     #[cfg(target_os = "linux")]
     fn apply_cgroup(&self, pid: i32) -> Option<SessionCgroup> {
         let base = self.inner.cgroup_base.as_ref()?;

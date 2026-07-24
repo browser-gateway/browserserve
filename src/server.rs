@@ -2,15 +2,18 @@
 
 pub mod auth;
 pub mod http;
+pub mod profiles;
 pub mod ws;
 
 use crate::config::{Loaded, PressureConfig};
 use crate::factory::ChromeFactory;
 use crate::pool::{Pool, PoolOptions};
 use crate::pressure::PressureGauge;
+use crate::server::profiles::{MAX_PENDING, MAX_PROFILE_BYTES, PROFILE_TTL, ProfileStore};
 use crate::{chrome, pressure, session_dirs};
 use axum::Router;
-use axum::routing::{any, get};
+use axum::extract::DefaultBodyLimit;
+use axum::routing::{any, get, post};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +48,8 @@ pub struct AppState {
     /// Where the session ceiling came from: `config`, or the auto-capacity
     /// constraint that bound (`memory`, `pids`, `cpu`).
     pub capacity_source: &'static str,
+    /// The one-shot profile hand-off store backing `/v1/profile`.
+    pub profiles: ProfileStore,
 }
 
 /// Builds the router: probe routes carry an HTTP timeout; the WS route does
@@ -62,6 +67,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         ));
     Router::new()
         .route("/", any(ws::ws_handler))
+        .route(
+            "/v1/profile",
+            post(http::profile_drop_off).layer(DefaultBodyLimit::max(MAX_PROFILE_BYTES)),
+        )
+        .route("/v1/profile/{token}", get(http::profile_pick_up))
         .merge(probes)
         .with_state(state)
 }
@@ -135,6 +145,7 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         max_message_bytes: config.chrome.max_frame_bytes,
         tiers,
         capacity_source,
+        profiles: ProfileStore::new(PROFILE_TTL, MAX_PENDING),
     });
 
     let bind = format!("{}:{}", loaded.serve.host, loaded.serve.port);

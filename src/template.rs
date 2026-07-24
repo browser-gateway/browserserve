@@ -54,13 +54,13 @@ pub fn clone_template(template: &Path, dest: &Path, tier: ProfileTier) -> io::Re
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    let use_reflink = tier == ProfileTier::Reflink;
-    walk_tree(template, dest, use_reflink)
+    copy_tree(template, dest, tier == ProfileTier::Reflink)
 }
 
-// One recursive tree walker; `reflink` chooses the per-file copy strategy.
-// Symlinks in a sealed template are intentionally dropped.
-fn walk_tree(src: &Path, dest: &Path, reflink: bool) -> io::Result<()> {
+// One recursive tree copier; `reflink` chooses the per-file copy strategy.
+// Symlinks are intentionally dropped (sealed templates and Chrome storage
+// stores are plain files). Shared with the profile snapshot/seed path.
+pub(crate) fn copy_tree(src: &Path, dest: &Path, reflink: bool) -> io::Result<()> {
     fs::create_dir_all(dest)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -68,7 +68,7 @@ fn walk_tree(src: &Path, dest: &Path, reflink: bool) -> io::Result<()> {
         let to = dest.join(entry.file_name());
         let meta = entry.metadata()?;
         if meta.is_dir() {
-            walk_tree(&from, &to, reflink)?;
+            copy_tree(&from, &to, reflink)?;
         } else if meta.is_file() {
             copy_file(&from, &to, reflink)?;
         }

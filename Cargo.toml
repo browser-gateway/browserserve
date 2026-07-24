@@ -17,10 +17,12 @@ publish = false
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 command-fds = { version = "0.3", features = ["tokio"] }
+getrandom = "0.3"
 memchr = "2"
 reflink-copy = "0.1"
 nix = { version = "0.31", features = ["fs", "process", "signal", "resource", "mount"] }
@@ -47,6 +49,8 @@ tower-http = { version = "0.6", features = ["timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1", features = ["derive"] }
+rusty-leveldb = { version = "4.0.1", default-features = false, features = ["fs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.17"
@@ -54,6 +58,7 @@ procfs = "0.17"
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+tokio = { version = "1", features = ["test-util", "macros", "rt"] }
 
 [lints.rust]
 unreachable_pub = "warn"

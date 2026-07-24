@@ -8,7 +8,9 @@ use std::path::Path;
 /// The set is the 2026 consensus across major automation launchers: headless,
 /// no first-run surfaces, no phone-home services, no throttling of background
 /// work, deterministic rendering color space, keychain and password store
-/// disabled. Sandbox stays ON; `--no-sandbox` is a per-config opt-in.
+/// disabled, no crash-restore prompt (a seeded profile dir reads as "crashed"
+/// after a kill-based teardown). Sandbox stays ON; `--no-sandbox` is a
+/// per-config opt-in.
 pub const DEFAULT_FLAGS: &[&str] = &[
     "--headless",
     "--allow-pre-commit-input",
@@ -27,6 +29,8 @@ pub const DEFAULT_FLAGS: &[&str] = &[
     "--disable-ipc-flooding-protection",
     "--disable-popup-blocking",
     "--disable-prompt-on-repost",
+    "--disable-session-crashed-bubble",
+    "--hide-crash-restore-bubble",
     "--disable-sync",
     "--disable-features=Translate,MediaRouter,DialMediaRouteProvider,OptimizationHints,AcceptCHFrame,DestroyProfileOnBrowserClose",
     "--export-tagged-pdf",
@@ -104,6 +108,24 @@ mod tests {
         let lang = flags.iter().position(|f| f == "--lang=de").unwrap();
         let url = flags.iter().position(|f| f == "about:blank").unwrap();
         assert!(lang < url);
+    }
+
+    #[test]
+    fn crash_restore_prompt_is_suppressed() {
+        let flags = flags_for(false, &[]);
+        assert!(
+            flags
+                .iter()
+                .any(|f| f == "--disable-session-crashed-bubble")
+        );
+        assert!(flags.iter().any(|f| f == "--hide-crash-restore-bubble"));
+    }
+
+    #[test]
+    fn cookie_encryption_is_portable() {
+        let flags = flags_for(false, &[]);
+        assert!(flags.iter().any(|f| f == "--password-store=basic"));
+        assert!(flags.iter().any(|f| f == "--use-mock-keychain"));
     }
 
     #[test]
