@@ -4,7 +4,7 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2] - 2026-07-24
 
 ### Added
 - Profiles: sessions can be launched from a saved profile and captured back at
@@ -59,4 +59,4 @@ All notable changes to browserserve are documented here. The format is based on
   that keeps Chromium's sandbox enabled.
 - `browserserve check` and `browserserve doctor` diagnostics.
 
-[Unreleased]: https://github.com/browser-gateway/browserserve/commits/main
+[0.1.2]: https://github.com/browser-gateway/browserserve/releases/tag/v0.1.2
