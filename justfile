@@ -3,6 +3,11 @@
 default:
     @just --list
 
+# One-time: activate the committed git hooks (fmt+clippy on commit, full gate on push).
+setup:
+    git config core.hooksPath .githooks
+    @echo "git hooks activated (.githooks). pre-commit: fmt+clippy. pre-push: scripts/gate.sh"
+
 # Format, then run the full quality gate (fmt, clippy, deny, audit, tests, build, doc).
 gate:
     ./scripts/gate.sh

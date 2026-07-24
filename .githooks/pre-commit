@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fast local gates — formatting + lint. The full gate (tests, deny, audit,
+# release build, doc) runs on pre-push and in CI. See scripts/gate.sh.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+echo "== pre-commit: fmt"
+cargo fmt --check
+echo "== pre-commit: clippy"
+cargo clippy --all-targets --all-features -- -D warnings
+echo "== pre-commit gates passed"

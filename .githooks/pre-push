@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Full quality gate before code reaches the remote: fmt, clippy (host + linux
+# cross-check), deny, audit, unused-deps, duplication, tests, release build, doc.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+exec bash scripts/gate.sh

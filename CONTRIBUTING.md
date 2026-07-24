@@ -33,6 +33,18 @@ This runs, in order: `cargo fmt --check`, `cargo clippy --all-targets
 in `Cargo.toml`), `cargo deny check`, `cargo audit`, the test suite (`cargo
 nextest run`), a release build, and `cargo doc`. CI runs the same script.
 
+### Git hooks
+
+Committed hooks in `.githooks/` enforce these locally. Activate them once per clone:
+
+```bash
+just setup           # or: git config core.hooksPath .githooks
+```
+
+`pre-commit` runs `cargo fmt --check` + `cargo clippy -D warnings` (fast). `pre-push`
+runs the full `scripts/gate.sh`. CI runs the same gate regardless, so the hooks are
+an early-catch, not the only line of defense.
+
 Individually:
 
 ```bash
