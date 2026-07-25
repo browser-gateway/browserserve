@@ -22,11 +22,12 @@ pressure:
 
 chrome:
   # executablePath: /usr/bin/chromium   # auto-detected when unset
-  transport: pipe          # pipe (default) or port
+  transport: pipe          # CDP transport; only "pipe" is supported today
   noSandbox: false         # keep the Chromium sandbox on; see docker/seccomp.json
   extraFlags: []           # appended after the built-in flag set
   launchTimeoutMs: 30000   # budget for a browser to become CDP-ready
   maxFrameBytes: 268435456 # cap on a single CDP message
 
+# externalAddress: ws://browsers.internal:9222  # public address in webSocketDebuggerUrl; set behind a proxy/LB (defaults to the request Host)
 dataDir: .browserserve     # per-session state lives under here
 drainTimeoutMs: 30000      # budget for draining active sessions on shutdown

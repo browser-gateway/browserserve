@@ -27,4 +27,4 @@ Notes relevant to a secure deployment:
   permits, per-session cgroup memory caps and atomic tree-kill are added. Run
   `browserserve doctor` to see the active isolation tier.
 
-Pre-release software: security guarantees are not final until v0.1.0.
+Pre-release software: security guarantees are not final until a 1.0 release.

@@ -3,7 +3,7 @@
 <p align="center">
   <strong>A self-hosted browser server.</strong>
   <br />
-  One container runs isolated Chrome sessions over CDP: a warm pool for instant starts, host-measured capacity, per-session resource caps, zero cross-session state.
+  One container runs isolated Chrome sessions over CDP: a warm pool for instant starts, host-derived capacity, per-session resource caps, optional save and restore of session profiles, and no cross-session state by default.
   <br />
   Works with Puppeteer, Playwright, and any CDP client.
 </p>
@@ -19,26 +19,27 @@
 <p align="center">
   <a href="https://browsergateway.com">Website</a>
   &nbsp;·&nbsp;
+  <a href="https://docs.browsergateway.com/browserserve">Docs</a>
+  &nbsp;·&nbsp;
   <a href="#quick-start">Quick start</a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/browser-gateway/browserserve/pkgs/container/browserserve">Container image</a>
+  <a href="#profiles">Profiles</a>
   &nbsp;·&nbsp;
   <a href="docs/BENCHMARKS.md">Benchmarks</a>
   &nbsp;·&nbsp;
   <a href="CHANGELOG.md">Changelog</a>
-  &nbsp;·&nbsp;
-  <a href="#sandbox">Sandbox</a>
 </p>
 
 ## Why
 
 Running headless Chrome in production is an operations problem: sessions leak state into each other, memory grows until the box dies, zombie processes pile up, and cold starts cost seconds. browserserve packages the fixes into a single deployable instance:
 
-- **Isolation by construction.** Every session gets its own freshly launched Chromium with its own empty profile directory. On disconnect the whole process tree is killed and the directory removed. Cookies, localStorage, IndexedDB, service workers: nothing survives, because nothing is shared.
-- **Warm pool.** Browsers are pre-launched and ready before clients connect. The pool grows under load to a hard ceiling, queues briefly when full, and shrinks when idle.
+- **Isolation by default.** Every session gets its own freshly launched Chromium with its own empty profile directory. On disconnect the whole process tree is killed and the directory removed, so by default nothing (cookies, localStorage, IndexedDB, service workers) carries from one session to the next. When you *want* state to persist, opt a session into a saved profile (see [Profiles](#profiles)).
+- **Warm pool.** Browsers are pre-launched and ready before clients connect. The pool grows under load to a ceiling, queues briefly when full, and shrinks when idle.
+- **Capacity derived from the host.** If you don't set a ceiling, browserserve measures the host's real limits (available memory, the PID/thread budget, CPU count) and a launched browser's footprint, then picks a safe maximum. On PID-capped containers the thread budget is often the real limit, not memory, so a box with plenty of free RAM can still cap out around a handful of browsers. `GET /pressure` reports the ceiling and which limit set it.
 - **Tier-detected resource control.** On a delegated Linux host, each session runs in its own cgroup with a kernel-enforced memory cap and one-syscall tree-kill; elsewhere, a portable RSS soft-cap applies. `browserserve doctor` reports the active tier.
 - **CDP over pipes, not ports.** Internally, browsers speak CDP over process pipes. No localhost port pool, no port exhaustion, no scannable debug ports.
-- **A pinned browser.** The image ships an exact Chromium build, identical in version on amd64 and arm64, verified by checksum at build time.
+- **A pinned browser.** The image ships the same pinned Chromium milestone on amd64 and arm64, verified by checksum at build time.
 
 Written in Rust: a single static binary supervises everything, and `unsafe` code is forbidden across the crate.
 
@@ -61,7 +62,38 @@ const browser = await puppeteer.connect({ browserWSEndpoint: "ws://localhost:922
 const browser = await chromium.connectOverCDP("http://localhost:9222");
 ```
 
-Every WebSocket connection gets its own isolated browser.
+Every WebSocket connection gets its own isolated browser. With authentication enabled (set `BROWSERSERVE_TOKEN`), pass the token as `?token=...` on the URL or an `Authorization: Bearer` header.
+
+## Profiles
+
+By default a session starts blank and is wiped on disconnect. A **profile** lets a session start from saved state and captures that state back when the session closes, so a logged-in session can be resumed later.
+
+A profile has two layers:
+
+- **Portable core: cookies + localStorage.** Applied and captured over CDP, so this layer works against any CDP browser, not only browserserve.
+- **Native layer: IndexedDB + service workers.** browserserve owns the browser's disk, so it moves these as on-disk stores. This is state a plain CDP connection cannot restore at all, which matters for apps that keep their session in IndexedDB (many single-page apps and auth SDKs).
+
+Use it through a one-shot token channel:
+
+```bash
+# 1. Drop off a profile, get a one-time token (bearer-authed, 64 MiB max, token lives ~2 min)
+curl -X POST http://localhost:9222/v1/profile \
+  -H "Authorization: Bearer $BROWSERSERVE_TOKEN" \
+  -H "Content-Type: application/json" --data @profile.json
+# -> { "profileToken": "…", "expiresInSec": 120 }
+
+# 2. Connect a session seeded with that profile:
+#      ws://localhost:9222/?profileToken=<token>
+
+# 3. After the session closes, pick up the captured state (single use):
+curl http://localhost:9222/v1/profile/<token> -H "Authorization: Bearer $BROWSERSERVE_TOKEN"
+```
+
+Add `?readOnly=1` to seed a profile without capturing it back, so any number of sessions can share one read-only profile at once.
+
+localStorage is read from the browser's on-disk store after it exits, so every origin is captured, including ones that set no cookie. Cookies are restored through a drop-only sanitizer: it keeps every security attribute (`Secure`, `HttpOnly`, `SameSite`, partitioning) exactly, and drops any cookie it cannot reproduce safely rather than weakening it.
+
+**Current limitations, being tightened before a 1.0.** IndexedDB and service workers are browserserve-native, so that layer does not transfer to a different provider. Service-worker restore fidelity is not yet independently measured. Importing a profile captured on a different Chromium build is untested. Cookies with an opaque partition key (CHIPS) are dropped. Profiles are proven on the portable isolation tier; the kernel-cgroup tier together with profiles has not yet been validated.
 
 ## Why not run Chrome yourself?
 
@@ -83,6 +115,7 @@ In short: plain Chrome is one browser you share; browserserve turns a machine in
 | Concurrency limit + queue | No | No | Yes | Yes |
 | Token authentication | No | No | Yes | Yes |
 | Health / pressure endpoints | No | No | Yes | Yes |
+| Restore IndexedDB / service workers across sessions | No | No | No | Yes |
 | Per-session kernel memory cap | No | No | No | Yes, where the host allows it |
 | Runtime | Chrome only | Chrome only | Node.js | Single static binary |
 | License | n/a | permissive | SSPL | MIT or Apache-2.0 |
@@ -95,11 +128,13 @@ Performance: a same-host baseline comparison (browserserve vs Browserless vs raw
 
 | Endpoint | Purpose |
 |---|---|
-| `WS /` | Connect a CDP session. One connection = one isolated browser. |
-| `GET /json/version` | CDP discovery. Points clients at the WebSocket endpoint. |
+| `WS /` | Connect a CDP session; one connection = one isolated browser. `?profileToken=` seeds a saved profile, `?readOnly=1` shares one without capturing, `?token=` authenticates. |
+| `GET /json/version` | CDP discovery. Also advertises `Browserserve-Version` and `Browserserve-MaxConcurrent` so a router can auto-detect the instance and its capacity. |
+| `POST /v1/profile` | Drop off a profile; returns a one-time `profileToken`. Bearer-authed, 64 MiB max. |
+| `GET /v1/profile/{token}` | Pick up the captured profile after the session closes. Bearer-authed, single use. |
 | `GET /live` | Process liveness. |
 | `GET /ready` | The instance can serve a session now. |
-| `GET /pressure` | Load, capacity, and the active isolation tier. |
+| `GET /pressure` | Load, capacity (and which host limit set it), and the active isolation tier. |
 
 ## Sandbox
 
@@ -112,27 +147,47 @@ chrome:
   noSandbox: true
 ```
 
+## Security
+
+- **Fail closed.** If the sandbox cannot start, sessions refuse to launch rather than silently downgrading (see [Sandbox](#sandbox)).
+- **Non-root.** The server does all real work as an unprivileged user (uid 999). It starts as root only to self-delegate a per-session cgroup slice when the host allows it, then drops privileges.
+- **Authenticated surface.** When `BROWSERSERVE_TOKEN` is set, the CDP WebSocket and the `/v1/profile*` endpoints require the token; `/live`, `/ready`, and `/pressure` stay open for load balancers.
+
+See [SECURITY.md](SECURITY.md) for the reporting policy and deployment notes.
+
 ## Configuration
 
-Everything works with zero configuration. Optional `browserserve.yml`:
+Everything works with zero configuration. To tune it, mount a `browserserve.yml`:
 
-```yaml
-pool:
-  minReady: 2        # browsers kept launched and ready
-  maxSessions: 10    # hard ceiling of concurrent browsers
-session:
-  memoryMaxMb: 2048  # per-session memory cap
-```
+| Key | Default | Meaning |
+|---|---|---|
+| `pool.minReady` | `1` | Browsers kept launched and ready ahead of demand. |
+| `pool.maxSessions` | unset (auto) | Hard ceiling of concurrent browsers. **Left unset, it is derived from the host** (memory, PID/thread budget, CPUs). |
+| `pool.maxQueue` | `10` | Clients allowed to wait for a slot before rejection. |
+| `pool.queueTimeoutMs` | `30000` | How long a queued client waits before a 503. |
+| `session.memoryMaxMb` | `2048` | Per-session memory cap (kernel-enforced on a delegated host, RSS soft-cap otherwise; `0` = uncapped). |
+| `session.maxSessionMs` | `0` | Maximum session lifetime; `0` = unlimited. |
+| `session.killGraceMs` | `5000` | SIGTERM-to-SIGKILL grace during teardown. |
+| `pressure.maxCpuPercent` | `95` | Reject new sessions above this host CPU usage. |
+| `pressure.maxMemoryPercent` | `95` | Reject new sessions above this host memory usage. |
+| `chrome.noSandbox` | `false` | Opt out of the Chromium sandbox (see [Sandbox](#sandbox)). |
+| `chrome.extraFlags` | `[]` | Extra Chromium flags, appended after the built-in set. |
+| `externalAddress` | Host header | Public address advertised in `webSocketDebuggerUrl`; set this when running behind a proxy or load balancer. |
+| `dataDir` | `.browserserve` | Where per-session state lives. |
 
-Environment: `PORT` (default 9222), `HOST`, `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_DATA_DIR`. See `browserserve.example.yml` for the full surface.
+See [`browserserve.example.yml`](browserserve.example.yml) for every key with inline notes. Unknown keys are rejected, so a typo in the config fails fast at startup.
+
+Environment: `PORT` (default 9222), `HOST` (default `0.0.0.0`), `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_CHROME_PATH`, `BROWSERSERVE_DATA_DIR`.
 
 ## CLI
 
 ```bash
-browserserve serve     # run the server
-browserserve check     # launch one browser, verify CDP readiness, tear down, report timings
-browserserve doctor    # diagnose the host: browser, fd limits, data dir, /dev/shm, isolation tier
+browserserve serve                  # run the server
+browserserve check [--chrome PATH]  # launch one browser, verify CDP readiness, tear down, report timings
+browserserve doctor                 # diagnose the host: browser, fd limits, data dir, /dev/shm, isolation tiers
 ```
+
+All three accept `--config <path>`. Config resolves in order: `--config`, then `BROWSERSERVE_CONFIG`, then `./browserserve.yml`.
 
 ## Building from source
 
