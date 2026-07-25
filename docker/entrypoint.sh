@@ -15,23 +15,26 @@ CG=/sys/fs/cgroup
 try_delegate() {
   [ "$(id -u)" = "0" ] || return 1
   [ -w "$CG/cgroup.subtree_control" ] || return 1
-  # Satisfy the "no internal process" rule: move PID 1 (and us) into a leaf
-  # before enabling controllers on the container-root cgroup.
-  mkdir -p "$CG/supervisor" 2>/dev/null || return 1
-  echo 1 > "$CG/supervisor/cgroup.procs" 2>/dev/null || true
-  echo $$ > "$CG/supervisor/cgroup.procs" 2>/dev/null || true
-  # Enable memory (and pids) for child leaves; ignore controllers not present.
+  # Delegate ONE parent ($CG/sessions) that holds both the runtime's supervisor
+  # leaf AND every per-session leaf. cgroup v2 lets a delegatee migrate a process
+  # between two cgroups only when it can write the common ancestor's cgroup.procs;
+  # nesting supervisor under the delegated sessions dir makes that ancestor the
+  # sessions dir itself, so the uid-999 runtime can move a session's browser out
+  # of supervisor into session-N. (Sibling supervisor + sessions under the root
+  # fails: their common ancestor is the root cgroup, which stays root-owned.)
+  mkdir -p "$CG/sessions/supervisor" 2>/dev/null || return 1
+  # "No internal process" rule: move PID 1 (and this shell) out of the root into
+  # the supervisor leaf before enabling any controller on the root or sessions.
+  echo 1 > "$CG/sessions/supervisor/cgroup.procs" 2>/dev/null || true
+  echo $$ > "$CG/sessions/supervisor/cgroup.procs" 2>/dev/null || true
+  # Enable memory + pids one level at a time: root -> sessions -> leaves.
   echo "+memory" > "$CG/cgroup.subtree_control" 2>/dev/null || true
   echo "+pids" > "$CG/cgroup.subtree_control" 2>/dev/null || true
-  mkdir -p "$CG/sessions" 2>/dev/null || return 1
-  # Session leaves need memory.max, which requires memory enabled in the
-  # sessions subtree too (cgroup v2 enables controllers one level at a time).
   echo "+memory" > "$CG/sessions/cgroup.subtree_control" 2>/dev/null || true
   echo "+pids" > "$CG/sessions/cgroup.subtree_control" 2>/dev/null || true
+  # Hand the whole sessions subtree (supervisor + future session leaves, and the
+  # sessions dir's own cgroup.procs = the migration ancestor) to the runtime user.
   chown -R "$RUNTIME_UID:$RUNTIME_GID" "$CG/sessions" 2>/dev/null || return 1
-  # Some kernels require the delegated dir's own control files to be writable.
-  chown "$RUNTIME_UID:$RUNTIME_GID" "$CG/sessions/cgroup.procs" \
-    "$CG/sessions/cgroup.subtree_control" 2>/dev/null || true
   export BROWSERSERVE_CGROUP_BASE="$CG/sessions"
   return 0
 }

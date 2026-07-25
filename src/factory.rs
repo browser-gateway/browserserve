@@ -3,7 +3,9 @@
 use crate::capacity::SessionFootprint;
 use crate::chrome::{Browser, BrowserVersion, LaunchSpec, force_kill_group, launch, teardown};
 use crate::config::RuntimeConfig;
-use crate::linux::tiers::{MemCapTier, Tiers};
+#[cfg(target_os = "linux")]
+use crate::linux::tiers::MemCapTier;
+use crate::linux::tiers::Tiers;
 use crate::pool::SessionFactory;
 use crate::profile::cdp::OriginState;
 use crate::profile::manifest::ManifestEntry;
@@ -377,13 +379,20 @@ impl ChromeFactory {
         let base = self.inner.cgroup_base.as_ref()?;
         let name = format!("session-{pid}");
         let leaf = crate::linux::cgroup::Cgroup::create(base, &name).ok()?;
+        // The migration is the operation a mis-delegated host can deny (EACCES).
+        // If it fails the leaf is inert (the browser is not in it), so drop it and
+        // report no cgroup, which starts the RSS soft cap instead of leaving the
+        // session uncapped. The startup probe normally prevents reaching here, but
+        // a per-session failure must not silently fall through to no cap at all.
+        if let Err(e) = leaf.attach(pid) {
+            tracing::warn!(error = %e, "cgroup: attach failed; falling back to rss soft-cap");
+            let _ = std::fs::remove_dir(leaf.dir());
+            return None;
+        }
         if self.inner.memory_max_bytes > 0
             && let Err(e) = leaf.set_memory_max(self.inner.memory_max_bytes)
         {
             tracing::warn!(error = %e, "cgroup: memory.max write failed");
-        }
-        if let Err(e) = leaf.attach(pid) {
-            tracing::warn!(error = %e, "cgroup: attach failed; leaf inert");
         }
         Some(leaf)
     }
@@ -409,7 +418,9 @@ impl ChromeFactory {
 
     fn spawn_soft_cap(&self, has_cgroup: bool, pid: i32) -> Option<AbortHandle> {
         let cap = self.inner.memory_max_bytes;
-        if cap == 0 || has_cgroup || self.inner.tiers.memcap != MemCapTier::RssPoll {
+        // Poll RSS whenever a cap was requested but no working cgroup hard cap is
+        // in place: the rss-poll tier, or a cgroup session whose attach fell back.
+        if cap == 0 || has_cgroup {
             return None;
         }
         let handle = tokio::spawn(async move {
