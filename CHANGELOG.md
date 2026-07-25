@@ -4,6 +4,18 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-07-25
+
+### Fixed
+- Per-session memory cap on delegated cgroup hosts. Sessions now run inside
+  their own cgroup with the configured `memory.max` hard cap. A delegation
+  boundary error previously left every session uncapped on delegated Docker
+  while `doctor` still reported a hard cap. The runtime now delegates a single
+  parent cgroup, so a session's browser can be moved into its own leaf; it
+  verifies a real process migration before reporting the cgroup tier; and it
+  falls back to the RSS soft cap, reported honestly, on any host where the
+  migration is refused.
+
 ## [0.1.2] - 2026-07-24
 
 ### Added
@@ -59,4 +71,5 @@ All notable changes to browserserve are documented here. The format is based on
   that keeps Chromium's sandbox enabled.
 - `browserserve check` and `browserserve doctor` diagnostics.
 
+[0.1.3]: https://github.com/browser-gateway/browserserve/releases/tag/v0.1.3
 [0.1.2]: https://github.com/browser-gateway/browserserve/releases/tag/v0.1.2
