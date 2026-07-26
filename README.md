@@ -35,7 +35,8 @@
 Running headless Chrome in production is an operations problem: sessions leak state into each other, memory grows until the box dies, zombie processes pile up, and cold starts cost seconds. browserserve packages the fixes into a single deployable instance:
 
 - **Isolation by default.** Every session gets its own freshly launched Chromium with its own empty profile directory. On disconnect the whole process tree is killed and the directory removed, so by default nothing (cookies, localStorage, IndexedDB, service workers) carries from one session to the next. When you *want* state to persist, opt a session into a saved profile (see [Profiles](#profiles)).
-- **Warm pool.** Browsers are pre-launched and ready before clients connect. The pool grows under load to a ceiling, queues briefly when full, and shrinks when idle.
+- **Warm pool, or scale to zero.** Browsers are pre-launched and ready before clients connect; the pool grows under load to a ceiling, queues briefly when full, and shrinks when idle. Set `pool.minReady: 0` for scale-to-zero: no browser runs while idle, and one launches on demand at the first connection. You trade a higher first-request latency for near-zero idle browser cost, which suits pay-as-you-go hosts.
+- **Instant startup.** The server binds and answers `/json/version` in well under a second, then warms browsers in the background. It never blocks startup on a browser launch, so it comes up cleanly even on a slow or constrained host.
 - **Capacity derived from the host.** If you don't set a ceiling, browserserve measures the host's real limits (available memory, the PID/thread budget, CPU count) and a launched browser's footprint, then picks a safe maximum. On PID-capped containers the thread budget is often the real limit, not memory, so a box with plenty of free RAM can still cap out around a handful of browsers. `GET /pressure` reports the ceiling and which limit set it.
 - **Tier-detected resource control.** On a delegated Linux host, each session runs in its own cgroup with a kernel-enforced memory cap and one-syscall tree-kill; elsewhere, a portable RSS soft-cap applies. `browserserve doctor` reports the active tier.
 - **CDP over pipes, not ports.** Internally, browsers speak CDP over process pipes. No localhost port pool, no port exhaustion, no scannable debug ports.
@@ -161,7 +162,7 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 
 | Key | Default | Meaning |
 |---|---|---|
-| `pool.minReady` | `1` | Browsers kept launched and ready ahead of demand. |
+| `pool.minReady` | `1` | Browsers kept launched and ready ahead of demand. Set to `0` for scale-to-zero: no idle browsers, one launches on demand at the first connection. |
 | `pool.maxSessions` | unset (auto) | Hard ceiling of concurrent browsers. **Left unset, it is derived from the host** (memory, PID/thread budget, CPUs). |
 | `pool.maxQueue` | `10` | Clients allowed to wait for a slot before rejection. |
 | `pool.queueTimeoutMs` | `30000` | How long a queued client waits before a 503. |
