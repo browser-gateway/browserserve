@@ -85,7 +85,33 @@ impl LaunchError {
         }
         None
     }
+
+    /// Whether the failure is Chromium's OS sandbox being unable to initialize
+    /// (the host blocks the namespaces/seccomp/setuid helper it needs), as
+    /// opposed to any other launch error. Drives the runtime's automatic
+    /// `--no-sandbox` fallback.
+    #[must_use]
+    pub fn is_sandbox_failure(&self) -> bool {
+        let (Self::ChromeExited { stderr_tail, .. }
+        | Self::StartupPipe { stderr_tail, .. }
+        | Self::ReadyTimeout { stderr_tail, .. }) = self
+        else {
+            return false;
+        };
+        SANDBOX_SIGNATURES
+            .iter()
+            .any(|sig| stderr_tail.contains(sig))
+    }
 }
+
+/// Chromium stderr fragments that mean its OS sandbox could not initialize.
+const SANDBOX_SIGNATURES: [&str; 5] = [
+    "No usable sandbox",
+    "sandbox/linux/services/credentials",
+    "Failed to move to new namespace",
+    "chrome_sandbox",
+    "setuid sandbox",
+];
 
 const SANDBOX_REMEDIATION: &str = "\
 the container blocks the system calls Chromium's sandbox needs. Two ways forward:
@@ -408,6 +434,32 @@ mod tests {
         };
         assert!(exited.remediation().is_none());
         assert!(LaunchError::PidUnavailable.remediation().is_none());
+    }
+
+    #[test]
+    fn is_sandbox_failure_matches_known_signatures() {
+        for tail in [
+            "FATAL:zygote_host_impl_linux.cc No usable sandbox!",
+            "FATAL:sandbox/linux/services/credentials.cc(131)] Check failed: Permission denied",
+            "Failed to move to new namespace: Operation not permitted",
+            "The setuid sandbox is not running as root. chrome_sandbox needs SUID.",
+        ] {
+            let err = LaunchError::ChromeExited {
+                status: String::from("signal: 6 (SIGABRT)"),
+                stderr_tail: String::from(tail),
+            };
+            assert!(err.is_sandbox_failure(), "should flag: {tail}");
+        }
+    }
+
+    #[test]
+    fn is_sandbox_failure_ignores_unrelated_errors() {
+        let exited = LaunchError::ChromeExited {
+            status: String::from("exit status: 1"),
+            stderr_tail: String::from("libnss3.so: cannot open shared object file"),
+        };
+        assert!(!exited.is_sandbox_failure());
+        assert!(!LaunchError::PidUnavailable.is_sandbox_failure());
     }
 
     #[test]

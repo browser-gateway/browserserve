@@ -42,9 +42,14 @@ pub async fn live() -> &'static str {
 /// `GET /ready`: a session could be served right now.
 pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
     let pool_stats = state.pool.stats();
-    let ready = pool_stats.accepting
+    let ready = !state.factory.sandbox_required_but_unavailable()
+        && pool_stats.accepting
         && (pool_stats.warm > 0 || pool_stats.running < pool_stats.max_sessions);
-    let body = axum::Json(json!({ "ready": ready, "warm": pool_stats.warm }));
+    let body = axum::Json(json!({
+        "ready": ready,
+        "warm": pool_stats.warm,
+        "sandbox": state.factory.sandbox_state(),
+    }));
     if ready {
         (StatusCode::OK, body).into_response()
     } else {
@@ -55,7 +60,9 @@ pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
 fn pressure_reason(state: &AppState) -> (&'static str, f64, f64) {
     let (cpu, memory) = state.gauge.snapshot();
     let pool_stats = state.pool.stats();
-    let reason = if !pool_stats.accepting {
+    let reason = if state.factory.sandbox_required_but_unavailable() {
+        "sandbox"
+    } else if !pool_stats.accepting {
         "draining"
     } else if pool_stats.running >= pool_stats.max_sessions
         && pool_stats.queued >= pool_stats.max_queue
@@ -91,6 +98,7 @@ pub async fn pressure(State(state): State<Arc<AppState>>) -> Response {
         "reason": reason,
         "capacitySource": state.capacity_source,
         "isolation": state.tiers,
+        "sandbox": state.factory.sandbox_state(),
         "date": date,
     }))
     .into_response()

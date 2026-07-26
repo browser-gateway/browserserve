@@ -128,6 +128,9 @@ pub struct ChromeConfig {
     pub transport: Transport,
     /// Launch Chrome with `--no-sandbox`. Off by default; prefer a sandboxed setup.
     pub no_sandbox: bool,
+    /// Require Chromium's sandbox: refuse to serve sessions rather than fall back
+    /// to `--no-sandbox` when the host blocks it. Off by default (auto-fallback).
+    pub require_sandbox: bool,
     /// Extra flags appended after the built-in set.
     pub extra_flags: Vec<String>,
     /// Time budget for a launched Chrome to become CDP-ready, in milliseconds.
@@ -142,6 +145,7 @@ impl Default for ChromeConfig {
             executable_path: None,
             transport: Transport::Pipe,
             no_sandbox: false,
+            require_sandbox: false,
             extra_flags: Vec::new(),
             launch_timeout_ms: 30_000,
             max_frame_bytes: 256 * 1024 * 1024,
@@ -204,10 +208,17 @@ pub struct Loaded {
     pub serve: ServeSettings,
 }
 
+fn is_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 /// Parses YAML (may be `None` or empty) and applies environment overrides.
 ///
 /// Recognized environment keys: `PORT`, `HOST`, `BROWSERSERVE_TOKEN`, `BROWSERSERVE_CHROME_PATH`,
-/// `BROWSERSERVE_DATA_DIR`. Returns a validated [`Loaded`].
+/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`. Returns a validated [`Loaded`].
 ///
 /// # Errors
 ///
@@ -228,6 +239,9 @@ pub fn load<S: std::hash::BuildHasher>(
     }
     if let Some(dir) = env.get("BROWSERSERVE_DATA_DIR") {
         config.data_dir = PathBuf::from(dir);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_REQUIRE_SANDBOX") {
+        config.chrome.require_sandbox = is_truthy(value);
     }
 
     let port = match env.get("PORT") {
@@ -308,6 +322,11 @@ fn validate(config: &RuntimeConfig) -> Result<(), ConfigError> {
             "chrome.maxFrameBytes must be greater than 0",
         )));
     }
+    if config.chrome.require_sandbox && config.chrome.no_sandbox {
+        return Err(ConfigError::Invalid(String::from(
+            "chrome.requireSandbox and chrome.noSandbox are contradictory: one demands the sandbox, the other disables it",
+        )));
+    }
     Ok(())
 }
 
@@ -364,6 +383,29 @@ dataDir: /var/lib/bgr
     #[test]
     fn unknown_fields_rejected() {
         assert!(load(Some("pool:\n  maxSesions: 3\n"), &HashMap::new()).is_err());
+    }
+
+    #[test]
+    fn require_sandbox_defaults_off() {
+        let loaded = load(None, &HashMap::new()).unwrap();
+        assert!(!loaded.config.chrome.require_sandbox);
+    }
+
+    #[test]
+    fn require_sandbox_env_override() {
+        let loaded = load(None, &env(&[("BROWSERSERVE_REQUIRE_SANDBOX", "1")])).unwrap();
+        assert!(loaded.config.chrome.require_sandbox);
+        let off = load(None, &env(&[("BROWSERSERVE_REQUIRE_SANDBOX", "no")])).unwrap();
+        assert!(!off.config.chrome.require_sandbox);
+    }
+
+    #[test]
+    fn require_and_no_sandbox_is_contradiction() {
+        let yaml = "chrome:\n  noSandbox: true\n  requireSandbox: true\n";
+        assert!(matches!(
+            load(Some(yaml), &HashMap::new()),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 
     #[test]

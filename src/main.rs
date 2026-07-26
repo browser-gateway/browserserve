@@ -103,16 +103,43 @@ async fn run_check(
         .map_err(|e| format!("provision session dir: {e}"))?;
     println!("user data dir  {}", dirs.user_data_dir.display());
 
-    let spec = LaunchSpec {
+    let mk_spec = |no_sandbox: bool| LaunchSpec {
         executable: &executable,
         user_data_dir: &dirs.user_data_dir,
-        no_sandbox: cfg.chrome.no_sandbox,
+        no_sandbox,
         extra_flags: &cfg.chrome.extra_flags,
         launch_timeout: Duration::from_millis(cfg.chrome.launch_timeout_ms),
         max_frame_bytes: cfg.chrome.max_frame_bytes,
     };
-    let browser = match chrome::launch(&spec).await {
+    let mut sandbox = if cfg.chrome.no_sandbox {
+        "off (config)"
+    } else {
+        "on"
+    };
+    let browser = match chrome::launch(&mk_spec(cfg.chrome.no_sandbox)).await {
         Ok(browser) => browser,
+        Err(e) if e.is_sandbox_failure() && cfg.chrome.require_sandbox => {
+            let _ = dirs.teardown().await;
+            let mut message = String::from(
+                "chrome.requireSandbox is set but this host blocks Chromium's sandbox",
+            );
+            if let Some(hint) = e.remediation() {
+                message.push_str("\n\nhint: ");
+                message.push_str(hint);
+            }
+            return Err(message);
+        }
+        Err(e) if e.is_sandbox_failure() && !cfg.chrome.no_sandbox => {
+            println!("sandbox        blocked by host; retrying with --no-sandbox");
+            sandbox = "off (auto-fallback: host blocks the sandbox)";
+            match chrome::launch(&mk_spec(true)).await {
+                Ok(browser) => browser,
+                Err(e) => {
+                    let _ = dirs.teardown().await;
+                    return Err(format!("launch failed after --no-sandbox fallback: {e}"));
+                }
+            }
+        }
         Err(e) => {
             let _ = dirs.teardown().await;
             let mut message = format!("launch failed: {e}");
@@ -123,6 +150,7 @@ async fn run_check(
             return Err(message);
         }
     };
+    println!("sandbox        {sandbox}");
     println!("pid            {}", browser.pid);
     println!("product        {}", browser.version.product);
     println!("protocol       {}", browser.version.protocol_version);

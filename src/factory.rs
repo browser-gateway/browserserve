@@ -13,6 +13,7 @@ use crate::rss::{tree_rss_bytes, tree_thread_count};
 use crate::session_dirs::SessionDirs;
 use crate::template;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::task::AbortHandle;
@@ -47,7 +48,10 @@ pub struct CapturedNative {
 
 struct FactoryInner {
     executable: PathBuf,
-    no_sandbox: bool,
+    config_no_sandbox: bool,
+    require_sandbox: bool,
+    sandbox_disabled: AtomicBool,
+    sandbox_blocked: AtomicBool,
     extra_flags: Vec<String>,
     launch_timeout: Duration,
     max_frame_bytes: usize,
@@ -83,7 +87,10 @@ impl ChromeFactory {
         Self {
             inner: Arc::new(FactoryInner {
                 executable,
-                no_sandbox: config.chrome.no_sandbox,
+                config_no_sandbox: config.chrome.no_sandbox,
+                require_sandbox: config.chrome.require_sandbox,
+                sandbox_disabled: AtomicBool::new(config.chrome.no_sandbox),
+                sandbox_blocked: AtomicBool::new(false),
                 extra_flags: config.chrome.extra_flags.clone(),
                 launch_timeout: Duration::from_millis(config.chrome.launch_timeout_ms),
                 max_frame_bytes: config.chrome.max_frame_bytes,
@@ -153,8 +160,7 @@ impl ChromeFactory {
                 return;
             }
         };
-        let spec = self.launch_spec(&scratch.user_data_dir);
-        let browser = match launch(&spec).await {
+        let browser = match self.launch_browser(&scratch.user_data_dir).await {
             Ok(browser) => browser,
             Err(e) => {
                 tracing::warn!(error = %e, "template: warm launch failed; sessions use empty dirs");
@@ -208,11 +214,75 @@ impl ChromeFactory {
         LaunchSpec {
             executable: &self.inner.executable,
             user_data_dir,
-            no_sandbox: self.inner.no_sandbox,
+            no_sandbox: self.inner.sandbox_disabled.load(Ordering::Relaxed),
             extra_flags: &self.inner.extra_flags,
             launch_timeout: self.inner.launch_timeout,
             max_frame_bytes: self.inner.max_frame_bytes,
         }
+    }
+
+    /// Launches Chrome, auto-recovering from a blocked host sandbox.
+    ///
+    /// If the launch fails because the host blocks Chromium's sandbox and the
+    /// operator has not set `chrome.requireSandbox`, disables the sandbox
+    /// process-wide (warning once) and retries. Under `requireSandbox` the
+    /// sandbox failure is recorded and propagated unchanged, so the server
+    /// refuses sessions rather than dropping the sandbox.
+    async fn launch_browser(
+        &self,
+        user_data_dir: &std::path::Path,
+    ) -> Result<Browser, crate::chrome::LaunchError> {
+        let sandboxed = !self.inner.sandbox_disabled.load(Ordering::Relaxed);
+        match launch(&self.launch_spec(user_data_dir)).await {
+            Ok(browser) => Ok(browser),
+            Err(e) if sandboxed && e.is_sandbox_failure() => {
+                let first = !self.inner.sandbox_blocked.swap(true, Ordering::SeqCst);
+                if self.inner.require_sandbox {
+                    if first {
+                        tracing::error!(
+                            remedy = "run with a seccomp profile that keeps the sandbox on, or unset chrome.requireSandbox to fall back to --no-sandbox",
+                            "chrome.requireSandbox is set but this host blocks Chromium's sandbox; refusing to serve sessions"
+                        );
+                    }
+                    return Err(e);
+                }
+                self.inner.sandbox_disabled.store(true, Ordering::SeqCst);
+                if first {
+                    tracing::warn!(
+                        remedy = "run with a seccomp profile to keep the sandbox on, or set chrome.requireSandbox: true to fail instead",
+                        "Chromium's sandbox is blocked on this host; falling back to --no-sandbox (safe for trusted content, isolation is unaffected)"
+                    );
+                }
+                launch(&self.launch_spec(user_data_dir)).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The active sandbox state, for `doctor` and `/pressure` reporting.
+    #[must_use]
+    pub fn sandbox_state(&self) -> &'static str {
+        if self.sandbox_required_but_unavailable() {
+            return "on (required, but host blocks it: refusing sessions)";
+        }
+        if self.inner.sandbox_disabled.load(Ordering::Relaxed) {
+            if self.inner.config_no_sandbox {
+                "off (config)"
+            } else {
+                "off (auto-fallback: host blocks the sandbox)"
+            }
+        } else if self.inner.require_sandbox {
+            "on (required)"
+        } else {
+            "on"
+        }
+    }
+
+    /// Whether `chrome.requireSandbox` is set and a launch has proven the host
+    /// blocks the sandbox, meaning sessions must be refused.
+    #[must_use]
+    pub fn sandbox_required_but_unavailable(&self) -> bool {
+        self.inner.require_sandbox && self.inner.sandbox_blocked.load(Ordering::Relaxed)
     }
 
     async fn provision_dirs(&self) -> Result<SessionDirs, String> {
@@ -306,8 +376,7 @@ impl ChromeFactory {
     }
 
     async fn launch_session(&self, dirs: SessionDirs) -> Result<ChromeSession, String> {
-        let spec = self.launch_spec(&dirs.user_data_dir);
-        let browser = match launch(&spec).await {
+        let browser = match self.launch_browser(&dirs.user_data_dir).await {
             Ok(browser) => browser,
             Err(e) => {
                 let _ = dirs.teardown().await;

@@ -4,6 +4,24 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-07-26
+
+### Added
+- Automatic sandbox fallback. When a host blocks Chromium's OS sandbox (Railway,
+  Fly, Cloud Run, restrictive Docker), the runtime detects the sandbox-specific
+  startup abort, logs one warning, and retries with `--no-sandbox` so the deploy
+  works with no configuration. Session isolation is unaffected: each session
+  still gets a fresh, private `--user-data-dir` that is wiped on disconnect, so
+  no state leaks between sessions with or without the sandbox.
+- `chrome.requireSandbox` (env `BROWSERSERVE_REQUIRE_SANDBOX`), default off. When
+  set, the runtime refuses to fall back: on a host that blocks the sandbox it
+  still binds and answers health checks but serves no sessions, and `GET /ready`
+  returns 503 with the reason. For operators who render untrusted content and
+  need the sandbox enforced. Rejected at startup if combined with `noSandbox`.
+- Sandbox state is reported in `GET /pressure` and `GET /ready` (`sandbox` field)
+  and printed by `browserserve check`: `on`, `on (required)`, `off (config)`, or
+  `off (auto-fallback: host blocks the sandbox)`.
+
 ## [0.1.4] - 2026-07-26
 
 ### Fixed

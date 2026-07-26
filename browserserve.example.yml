@@ -24,6 +24,7 @@ chrome:
   # executablePath: /usr/bin/chromium   # auto-detected when unset
   transport: pipe          # CDP transport; only "pipe" is supported today
   noSandbox: false         # keep the Chromium sandbox on; see docker/seccomp.json
+  requireSandbox: false    # true = refuse sessions if the host blocks the sandbox (no --no-sandbox fallback)
   extraFlags: []           # appended after the built-in flag set
   launchTimeoutMs: 30000   # budget for a browser to become CDP-ready
   maxFrameBytes: 268435456 # cap on a single CDP message
