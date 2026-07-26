@@ -106,13 +106,12 @@ pub async fn json_version(
     if !check_auth(&state, &query, &headers) {
         return unauthorized();
     }
-    let Some(version) = state.factory.cached_version() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({ "error": "warming up; no browser launched yet" })),
-        )
-            .into_response();
-    };
+    // Best-effort: the Chrome version fields fill in after the first launch, but
+    // discovery must answer 200 the moment the server is bound so a client can
+    // connect (the WS connect drives an on-demand launch) and so "starting up" is
+    // never confused with "hung". The webSocketDebuggerUrl and Browserserve-*
+    // headers are known without launching a browser.
+    let version = state.factory.cached_version().unwrap_or_default();
 
     let base = state.external_address.clone().unwrap_or_else(|| {
         let host = headers

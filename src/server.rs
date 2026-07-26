@@ -103,8 +103,11 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         tracing::info!("{note}");
     }
 
+    // Capacity resolves WITHOUT launching a browser: when the template footprint
+    // is unmeasured, auto-capacity falls back to a host CPU/memory estimate. The
+    // template build (and warm-pool prewarm) happen in the background AFTER the
+    // port is bound, so a slow or failing boot Chrome can never delay the bind.
     let factory = ChromeFactory::new(&config, executable.clone(), tiers.clone());
-    factory.prepare_template().await;
     let (max_sessions, capacity_source) = if let Some(explicit) = config.pool.max_sessions {
         (explicit, "config")
     } else {
@@ -153,6 +156,16 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         .await
         .map_err(|e| format!("cannot bind {bind}: {e}"))?;
     tracing::info!(address = %bind, chrome = %executable.display(), "browserserve listening");
+
+    // Warm up in the background so serving starts immediately. With min_ready > 0 we
+    // build the copy-on-write template (the pool replenisher then fills the pool);
+    // with min_ready == 0 (scale-to-zero) nothing launches at boot, so an idle
+    // instance holds zero browsers. A failed template build is a loud warning inside
+    // prepare_template, not a hang: sessions fall back to launching on empty dirs.
+    if config.pool.min_ready > 0 {
+        let warm = state.factory.clone();
+        tokio::spawn(async move { warm.prepare_template().await });
+    }
 
     let shutdown_pool = pool.clone();
     axum::serve(listener, router(Arc::clone(&state)))

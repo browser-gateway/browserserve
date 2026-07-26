@@ -4,6 +4,22 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-07-26
+
+### Fixed
+- Startup no longer blocks on launching a browser. The server binds its port and
+  starts serving before any Chrome launch, so it is reachable within a second even on
+  a slow or constrained host; previously the port could stay closed for up to the
+  launch timeout, which returned 502 on platforms like Railway. `GET /json/version`
+  now returns 200 immediately (with the connect URL and version/capacity headers)
+  instead of 503 until the first browser had launched.
+
+### Added
+- Scale-to-zero mode. With `pool.minReady: 0`, no browser launches at boot and an idle
+  instance holds zero browsers, launching one on demand at the first connection. This
+  trades a higher first-request latency for near-zero idle browser cost, which suits
+  pay-as-you-go hosts.
+
 ## [0.1.3] - 2026-07-25
 
 ### Fixed
@@ -71,5 +87,6 @@ All notable changes to browserserve are documented here. The format is based on
   that keeps Chromium's sandbox enabled.
 - `browserserve check` and `browserserve doctor` diagnostics.
 
+[0.1.4]: https://github.com/browser-gateway/browserserve/releases/tag/v0.1.4
 [0.1.3]: https://github.com/browser-gateway/browserserve/releases/tag/v0.1.3
 [0.1.2]: https://github.com/browser-gateway/browserserve/releases/tag/v0.1.2
