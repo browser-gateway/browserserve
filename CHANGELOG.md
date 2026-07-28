@@ -4,6 +4,17 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-07-27
+
+### Added
+- `BROWSERSERVE_MIN_READY` environment variable, mirroring `pool.minReady`. Lets
+  container and serverless deploys (which configure via env, not a mounted YAML)
+  set scale-to-zero with `BROWSERSERVE_MIN_READY=0`. An idle instance then holds
+  no browser and emits no outbound traffic, so platforms that sleep idle services
+  (Railway app-sleeping, Fly/Cloud Run scale-to-zero, KEDA) can suspend it; the
+  next connection wakes it and launches a browser on demand. Default is unchanged
+  (`1`, one warm browser).
+
 ## [0.1.5] - 2026-07-26
 
 ### Added

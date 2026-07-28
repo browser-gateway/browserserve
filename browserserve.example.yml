@@ -2,7 +2,7 @@
 # Load order: --config flag, then BROWSERSERVE_CONFIG, then ./browserserve.yml.
 
 pool:
-  minReady: 1              # browsers kept warm ahead of demand; 0 = scale-to-zero (launch on demand)
+  minReady: 1              # browsers kept warm ahead of demand; 0 = scale-to-zero (launch on demand). Env: BROWSERSERVE_MIN_READY
   # maxSessions: 10        # hard ceiling; unset = auto (derived from the host's
   #                          # real memory/pids/cpu limits and a measured browser)
   maxQueue: 10             # clients allowed to wait for a slot before rejection

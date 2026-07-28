@@ -218,7 +218,8 @@ fn is_truthy(value: &str) -> bool {
 /// Parses YAML (may be `None` or empty) and applies environment overrides.
 ///
 /// Recognized environment keys: `PORT`, `HOST`, `BROWSERSERVE_TOKEN`, `BROWSERSERVE_CHROME_PATH`,
-/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`. Returns a validated [`Loaded`].
+/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_MIN_READY`. Returns a
+/// validated [`Loaded`].
 ///
 /// # Errors
 ///
@@ -242,6 +243,13 @@ pub fn load<S: std::hash::BuildHasher>(
     }
     if let Some(value) = env.get("BROWSERSERVE_REQUIRE_SANDBOX") {
         config.chrome.require_sandbox = is_truthy(value);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_MIN_READY") {
+        config.pool.min_ready = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_MIN_READY must be a non-negative integer, got {value:?}"
+            ))
+        })?;
     }
 
     let port = match env.get("PORT") {
@@ -397,6 +405,26 @@ dataDir: /var/lib/bgr
         assert!(loaded.config.chrome.require_sandbox);
         let off = load(None, &env(&[("BROWSERSERVE_REQUIRE_SANDBOX", "no")])).unwrap();
         assert!(!off.config.chrome.require_sandbox);
+    }
+
+    #[test]
+    fn min_ready_env_override() {
+        let loaded = load(None, &env(&[("BROWSERSERVE_MIN_READY", "0")])).unwrap();
+        assert_eq!(loaded.config.pool.min_ready, 0);
+        let three = load(
+            Some("pool:\n  minReady: 1\n"),
+            &env(&[("BROWSERSERVE_MIN_READY", "3")]),
+        )
+        .unwrap();
+        assert_eq!(three.config.pool.min_ready, 3);
+    }
+
+    #[test]
+    fn min_ready_env_rejects_garbage() {
+        assert!(matches!(
+            load(None, &env(&[("BROWSERSERVE_MIN_READY", "lots")])),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
