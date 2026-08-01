@@ -17,6 +17,7 @@ pub const DEFAULT_FLAGS: &[&str] = &[
     "--disable-background-networking",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "--disable-breakpad",
     "--disable-crash-reporter",
     "--disable-client-side-phishing-detection",
@@ -126,6 +127,23 @@ mod tests {
         let flags = flags_for(false, &[]);
         assert!(flags.iter().any(|f| f == "--password-store=basic"));
         assert!(flags.iter().any(|f| f == "--use-mock-keychain"));
+    }
+
+    #[test]
+    fn renderer_liveness_trio_is_complete() {
+        let flags = flags_for(false, &[]);
+        for required in [
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ] {
+            assert!(
+                flags.iter().any(|f| f == required),
+                "{required} must ship; a headless renderer without it can be \
+                 deprioritized and stop painting under CPU pressure, which \
+                 silently starves screencast frames on a static page"
+            );
+        }
     }
 
     #[test]

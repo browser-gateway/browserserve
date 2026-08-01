@@ -15,6 +15,18 @@ All notable changes to browserserve are documented here. The format is based on
   next connection wakes it and launches a browser on demand. Default is unchanged
   (`1`, one warm browser).
 
+### Fixed
+- `Page.startScreencast` now emits the initial frame reliably on hosts under CPU
+  contention (Railway amd64 was the observed repro). The default launch flag set
+  was missing `--disable-renderer-backgrounding`, which every major headless
+  launcher (Puppeteer, chrome-launcher, Playwright) ships as part of the
+  renderer-liveness trio alongside `--disable-background-timer-throttling` and
+  `--disable-backgrounding-occluded-windows`. Without it, a headless renderer
+  that is not the foreground window can be deprioritized by the OS scheduler,
+  which starves the post-load paint that would produce the first screencast
+  frame. Active/repainting pages were unaffected in local measurement, but
+  static pages on contended hosts silently emitted zero frames.
+
 ## [0.1.5] - 2026-07-26
 
 ### Added
