@@ -11,7 +11,7 @@ pool:
   warmMaxAgeMs: 3600000    # any warm browser is recycled at this age
 
 session:
-  maxSessionMs: 0          # maximum session lifetime; 0 = unlimited
+  idleTimeoutMs: 0         # kill a session whose client has not sent a CDP message in this many ms; 0 = disabled. Recommended: 300000 (5 min).
   memoryMaxMb: 2048        # per-session memory cap (cgroups, Linux); 0 = uncapped
   tmpfsSizeMb: 512         # size cap for RAM-backed session dirs (Linux)
   killGraceMs: 5000        # SIGTERM to SIGKILL grace during teardown

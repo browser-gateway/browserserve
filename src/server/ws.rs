@@ -122,11 +122,12 @@ pub async fn ws_handler(
     let pool = state.pool.clone();
     let cancel = state.cancel.clone();
     let tracker = state.tracker.clone();
+    let idle_timeout = state.idle_timeout;
     ws.max_message_size(state.max_message_bytes)
         .on_upgrade(move |socket| {
             tracker.track_future(async move {
                 tokio::select! {
-                    () = bridge(socket, pipe) => {}
+                    () = bridge(socket, pipe, idle_timeout) => {}
                     () = cancel.cancelled() => {}
                 }
                 pool.destroy(claimed).await;
@@ -174,11 +175,13 @@ async fn profile_session(
     }
     drop(payload);
 
+    let idle_timeout = state.idle_timeout;
+
     // Read-only: serve, then tear down fast with NO capture — nothing is saved
     // back, which is what lets many sessions share one read-only profile.
     if read_only {
         tokio::select! {
-            () = bridge(socket, pipe) => {}
+            () = bridge(socket, pipe, idle_timeout) => {}
             () = cancel.cancelled() => {}
         }
         state.factory.destroy(session).await;
@@ -187,7 +190,7 @@ async fn profile_session(
 
     // Serve; reclaim the pipe if the CLIENT closed (browser still alive).
     let reclaimed = tokio::select! {
-        r = bridge_reclaimable(socket, pipe) => r,
+        r = bridge_reclaimable(socket, pipe, idle_timeout) => r,
         () = cancel.cancelled() => None,
     };
 

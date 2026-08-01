@@ -68,8 +68,11 @@ impl Default for PoolConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionConfig {
-    /// Maximum session lifetime in milliseconds. `0` means unlimited.
-    pub max_session_ms: u64,
+    /// Kill a session whose client has not sent a CDP message in this many
+    /// milliseconds. `0` disables. Client-outbound traffic only resets the
+    /// clock: browser→client screencast frames or events do not, because
+    /// they do not prove the client is still alive.
+    pub idle_timeout_ms: u64,
     /// Per-session memory cap in MiB, enforced via cgroups on Linux. `0` disables.
     pub memory_max_mb: u64,
     /// Size cap for the RAM-backed session dir tier on Linux, in MiB.
@@ -81,7 +84,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            max_session_ms: 0,
+            idle_timeout_ms: 0,
             memory_max_mb: 2048,
             tmpfs_size_mb: 512,
             kill_grace_ms: 5_000,
@@ -218,7 +221,8 @@ fn is_truthy(value: &str) -> bool {
 /// Parses YAML (may be `None` or empty) and applies environment overrides.
 ///
 /// Recognized environment keys: `PORT`, `HOST`, `BROWSERSERVE_TOKEN`, `BROWSERSERVE_CHROME_PATH`,
-/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_MIN_READY`. Returns a
+/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_MIN_READY`,
+/// `BROWSERSERVE_IDLE_TIMEOUT_MS`. Returns a
 /// validated [`Loaded`].
 ///
 /// # Errors
@@ -248,6 +252,13 @@ pub fn load<S: std::hash::BuildHasher>(
         config.pool.min_ready = value.trim().parse().map_err(|_| {
             ConfigError::Invalid(format!(
                 "BROWSERSERVE_MIN_READY must be a non-negative integer, got {value:?}"
+            ))
+        })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_IDLE_TIMEOUT_MS") {
+        config.session.idle_timeout_ms = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_IDLE_TIMEOUT_MS must be a non-negative integer, got {value:?}"
             ))
         })?;
     }
@@ -424,6 +435,47 @@ dataDir: /var/lib/bgr
         assert!(matches!(
             load(None, &env(&[("BROWSERSERVE_MIN_READY", "lots")])),
             Err(ConfigError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn idle_timeout_defaults_off() {
+        let loaded = load(None, &HashMap::new()).unwrap();
+        assert_eq!(loaded.config.session.idle_timeout_ms, 0);
+    }
+
+    #[test]
+    fn idle_timeout_yaml_override() {
+        let yaml = "session:\n  idleTimeoutMs: 300000\n";
+        let loaded = load(Some(yaml), &HashMap::new()).unwrap();
+        assert_eq!(loaded.config.session.idle_timeout_ms, 300_000);
+    }
+
+    #[test]
+    fn idle_timeout_env_override_wins() {
+        let yaml = "session:\n  idleTimeoutMs: 300000\n";
+        let loaded = load(
+            Some(yaml),
+            &env(&[("BROWSERSERVE_IDLE_TIMEOUT_MS", "60000")]),
+        )
+        .unwrap();
+        assert_eq!(loaded.config.session.idle_timeout_ms, 60_000);
+    }
+
+    #[test]
+    fn idle_timeout_env_rejects_garbage() {
+        assert!(matches!(
+            load(None, &env(&[("BROWSERSERVE_IDLE_TIMEOUT_MS", "forever")])),
+            Err(ConfigError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn dead_max_session_ms_field_is_rejected() {
+        let yaml = "session:\n  maxSessionMs: 3600000\n";
+        assert!(matches!(
+            load(Some(yaml), &HashMap::new()),
+            Err(ConfigError::Yaml(_))
         ));
     }
 

@@ -99,6 +99,7 @@ pub async fn pressure(State(state): State<Arc<AppState>>) -> Response {
         "capacitySource": state.capacity_source,
         "isolation": state.tiers,
         "sandbox": state.factory.sandbox_state(),
+        "idleTimeoutMs": state.idle_timeout.map_or(0, |d| d.as_millis()),
         "date": date,
     }))
     .into_response()

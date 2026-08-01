@@ -50,6 +50,10 @@ pub struct AppState {
     pub capacity_source: &'static str,
     /// The one-shot profile hand-off store backing `/v1/profile`.
     pub profiles: ProfileStore,
+    /// Idle timeout applied to the client→server direction on every session's
+    /// WS bridge. `None` disables. Sourced from `session.idleTimeoutMs` or the
+    /// `BROWSERSERVE_IDLE_TIMEOUT_MS` env var.
+    pub idle_timeout: Option<Duration>,
 }
 
 /// Builds the router: probe routes carry an HTTP timeout; the WS route does
@@ -149,6 +153,8 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         tiers,
         capacity_source,
         profiles: ProfileStore::new(PROFILE_TTL, MAX_PENDING),
+        idle_timeout: (config.session.idle_timeout_ms > 0)
+            .then(|| Duration::from_millis(config.session.idle_timeout_ms)),
     });
 
     let bind = format!("{}:{}", loaded.serve.host, loaded.serve.port);

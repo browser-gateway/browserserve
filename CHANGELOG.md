@@ -4,6 +4,28 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-08-01
+
+### Added
+- `session.idleTimeoutMs` config field and `BROWSERSERVE_IDLE_TIMEOUT_MS` env var.
+  Kills a session whose client has not sent a CDP message in the configured
+  number of milliseconds. Default `0` disables (existing behaviour). Only
+  client→server traffic resets the clock; browser→client screencast frames or
+  events do not, because they do not prove the client is still alive. On idle,
+  the client receives a `1013` WebSocket close with reason
+  `idle-timeout after {N}ms`, then the browser process is killed and its slot
+  returns to the pool. Recommended starting value for operators who need
+  runaway-session insurance: `300000` (5 min). Reported on `GET /pressure` as
+  `idleTimeoutMs`.
+
+### Removed
+- `session.maxSessionMs` config field. It was declared in v0.1.0 with a
+  docstring but never read anywhere in the codebase (dead config). Operators
+  who set it in YAML got no behaviour change and no warning. If your config
+  contains `session.maxSessionMs`, remove it or replace with
+  `session.idleTimeoutMs` (which is what you probably wanted). YAML with the
+  old key now fails startup with an unknown-field error.
+
 ## [0.1.7] - 2026-08-01
 
 ### Fixed
