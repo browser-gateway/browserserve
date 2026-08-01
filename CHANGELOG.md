@@ -4,6 +4,20 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-08-01
+
+### Changed
+- **`session.memoryMaxMb` default is now `0` (disabled).** Previously defaulted to `2048` (2 GB), which was too tight for real websites — a single Chrome instance with a modern page routinely exceeds 2 GB across its process tree (main browser + renderer + GPU + network service + storage), and browserserve would kill the session after ~30 seconds. Operators who want the per-session cap can still set it explicitly (recommended sizing: `container_memory_mb / max_sessions × 0.8`); operators who leave it at the default now let the container's own memory limit (Docker `--memory`, K8s limits, Railway) be the OOM boundary. Same intent — one runaway session can't eat the host — different layer.
+
+### Added
+- Environment variables for every remaining tuning knob so managed-platform deploys never need a mounted YAML:
+  - `BROWSERSERVE_MEMORY_MAX_MB` — mirrors `session.memoryMaxMb`.
+  - `BROWSERSERVE_MAX_SESSIONS` — mirrors `pool.maxSessions`. Must be ≥ 1.
+  - `BROWSERSERVE_MAX_QUEUE` — mirrors `pool.maxQueue`.
+  - `BROWSERSERVE_QUEUE_TIMEOUT_MS` — mirrors `pool.queueTimeoutMs`.
+  - `BROWSERSERVE_NO_SANDBOX` — mirrors `chrome.noSandbox`. Boolean (`1`/`true`/`yes` are truthy). Still validated against `chrome.requireSandbox` — setting both fails startup.
+- All env vars follow the existing precedence: env wins over YAML. Documented in the `browserserve.mdx` reference on `docs.browsergateway.com`.
+
 ## [0.1.8] - 2026-08-01
 
 ### Added

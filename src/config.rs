@@ -85,7 +85,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             idle_timeout_ms: 0,
-            memory_max_mb: 2048,
+            memory_max_mb: 0,
             tmpfs_size_mb: 512,
             kill_grace_ms: 5_000,
         }
@@ -221,8 +221,10 @@ fn is_truthy(value: &str) -> bool {
 /// Parses YAML (may be `None` or empty) and applies environment overrides.
 ///
 /// Recognized environment keys: `PORT`, `HOST`, `BROWSERSERVE_TOKEN`, `BROWSERSERVE_CHROME_PATH`,
-/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_MIN_READY`,
-/// `BROWSERSERVE_IDLE_TIMEOUT_MS`. Returns a
+/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_NO_SANDBOX`,
+/// `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`,
+/// `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`,
+/// `BROWSERSERVE_MEMORY_MAX_MB`. Returns a
 /// validated [`Loaded`].
 ///
 /// # Errors
@@ -261,6 +263,43 @@ pub fn load<S: std::hash::BuildHasher>(
                 "BROWSERSERVE_IDLE_TIMEOUT_MS must be a non-negative integer, got {value:?}"
             ))
         })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_MEMORY_MAX_MB") {
+        config.session.memory_max_mb = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_MEMORY_MAX_MB must be a non-negative integer, got {value:?}"
+            ))
+        })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_MAX_SESSIONS") {
+        let parsed: u32 = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_MAX_SESSIONS must be a positive integer, got {value:?}"
+            ))
+        })?;
+        if parsed == 0 {
+            return Err(ConfigError::Invalid(
+                "BROWSERSERVE_MAX_SESSIONS must be at least 1".into(),
+            ));
+        }
+        config.pool.max_sessions = Some(parsed);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_MAX_QUEUE") {
+        config.pool.max_queue = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_MAX_QUEUE must be a non-negative integer, got {value:?}"
+            ))
+        })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_QUEUE_TIMEOUT_MS") {
+        config.pool.queue_timeout_ms = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_QUEUE_TIMEOUT_MS must be a non-negative integer, got {value:?}"
+            ))
+        })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_NO_SANDBOX") {
+        config.chrome.no_sandbox = is_truthy(value);
     }
 
     let port = match env.get("PORT") {
@@ -477,6 +516,54 @@ dataDir: /var/lib/bgr
             load(Some(yaml), &HashMap::new()),
             Err(ConfigError::Yaml(_))
         ));
+    }
+
+    #[test]
+    fn memory_max_mb_default_is_disabled() {
+        let loaded = load(None, &HashMap::new()).unwrap();
+        assert_eq!(loaded.config.session.memory_max_mb, 0);
+    }
+
+    #[test]
+    fn memory_max_mb_env_override() {
+        let loaded = load(
+            Some("session:\n  memoryMaxMb: 1024\n"),
+            &env(&[("BROWSERSERVE_MEMORY_MAX_MB", "4096")]),
+        )
+        .unwrap();
+        assert_eq!(loaded.config.session.memory_max_mb, 4096);
+    }
+
+    #[test]
+    fn max_sessions_env_override() {
+        let loaded = load(None, &env(&[("BROWSERSERVE_MAX_SESSIONS", "8")])).unwrap();
+        assert_eq!(loaded.config.pool.max_sessions, Some(8));
+    }
+
+    #[test]
+    fn max_sessions_env_rejects_zero() {
+        assert!(matches!(
+            load(None, &env(&[("BROWSERSERVE_MAX_SESSIONS", "0")])),
+            Err(ConfigError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn no_sandbox_env_override() {
+        let loaded = load(None, &env(&[("BROWSERSERVE_NO_SANDBOX", "1")])).unwrap();
+        assert!(loaded.config.chrome.no_sandbox);
+    }
+
+    #[test]
+    fn max_queue_env_override() {
+        let loaded = load(None, &env(&[("BROWSERSERVE_MAX_QUEUE", "50")])).unwrap();
+        assert_eq!(loaded.config.pool.max_queue, 50);
+    }
+
+    #[test]
+    fn queue_timeout_env_override() {
+        let loaded = load(None, &env(&[("BROWSERSERVE_QUEUE_TIMEOUT_MS", "60000")])).unwrap();
+        assert_eq!(loaded.config.pool.queue_timeout_ms, 60_000);
     }
 
     #[test]
