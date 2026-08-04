@@ -17,9 +17,12 @@ impact. We aim to acknowledge reports within a few business days.
 browserserve runs untrusted web content in Chromium on your infrastructure.
 Notes relevant to a secure deployment:
 
-- Run the container with the shipped `docker/seccomp.json` so Chromium's sandbox
-  stays enabled. Without it, sessions fail closed rather than silently dropping
-  the sandbox.
+- Chromium's sandbox stays on where the host allows it. Where the host blocks
+  it, browserserve falls back to `--no-sandbox` and warns; isolation between
+  sessions is unaffected, since it comes from the per-session profile directory.
+  To keep the sandbox on in Docker, run with the shipped `docker/seccomp.json`.
+  For untrusted content, set `chrome.requireSandbox: true` to refuse the fallback
+  and fail closed instead.
 - The runtime performs all real work as a non-root user (uid 999). It starts as
   root only to self-delegate a cgroup slice when the host allows it, then drops
   privileges.

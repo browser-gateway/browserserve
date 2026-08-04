@@ -47,11 +47,10 @@ Written in Rust: a single static binary supervises everything, and `unsafe` code
 ## Quick start
 
 ```bash
-docker run --rm -p 9222:9222 \
-  --shm-size=1g \
-  --security-opt seccomp=docker/seccomp.json \
-  ghcr.io/browser-gateway/browserserve
+docker run --rm -p 9222:9222 --shm-size=1g ghcr.io/browser-gateway/browserserve
 ```
+
+The image runs out of the box. Where the host blocks Chromium's sandbox, browserserve falls back to `--no-sandbox` automatically (see [Sandbox](#sandbox)).
 
 Connect with any CDP client:
 
@@ -94,7 +93,7 @@ Add `?readOnly=1` to seed a profile without capturing it back, so any number of 
 
 localStorage is read from the browser's on-disk store after it exits, so every origin is captured, including ones that set no cookie. Cookies are restored through a drop-only sanitizer: it keeps every security attribute (`Secure`, `HttpOnly`, `SameSite`, partitioning) exactly, and drops any cookie it cannot reproduce safely rather than weakening it.
 
-**Current limitations, being tightened before a 1.0.** IndexedDB and service workers are browserserve-native, so that layer does not transfer to a different provider. Service-worker restore fidelity is not yet independently measured. Importing a profile captured on a different Chromium build is untested. Cookies with an opaque partition key (CHIPS) are dropped. Profiles are proven on the portable isolation tier; the kernel-cgroup tier together with profiles has not yet been validated.
+**Current limitations, being tightened before a 1.0.** IndexedDB and service workers are browserserve-native, so that layer does not transfer to a different provider. Service-worker restore fidelity is not yet independently measured. Importing a profile captured on a different Chromium build is untested. Cookies with an opaque partition key (CHIPS) are dropped. Profiles are proven on the portable isolation tier; the kernel-cgroup tier together with profiles has been validated in a Docker Desktop environment, with broad production validation ongoing.
 
 ## Why not run Chrome yourself?
 
@@ -123,7 +122,7 @@ In short: plain Chrome is one browser you share; browserserve turns a machine in
 
 Notes. "headless-shell in a container" means a bare Chromium build exposing a debug port, such as `chromedp/docker-headless-shell`; it behaves like a single shared browser and does not isolate connections. Browserless is a capable, mature product with per-session isolation, a queue, and auth; the differences that matter here are its SSPL license, its Node.js runtime, and the absence of a built-in warm pool. browserserve is MIT/Apache dual-licensed, ships as one small static binary, and keeps a warm pool by default.
 
-Performance: a same-host baseline comparison (browserserve vs Browserless vs raw Chrome) is in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). In short, browserserve is on par with Browserless on latency, per-session memory (~140 MB — the same Chrome underneath), and throughput, and both pools return to baseline after every session while raw Chrome leaked and crashed. Those numbers are a shared-cloud-host baseline with an honest caveats block; bare-metal, in-region absolutes are future work.
+Performance: a same-host baseline comparison (browserserve vs Browserless vs raw Chrome) is in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). In short, browserserve is on par with Browserless on latency, per-session memory (~140 MB, the same Chrome underneath), and throughput, and both pools return to baseline after every session while raw Chrome leaked and crashed. Those numbers are a shared-cloud-host baseline with an honest caveats block; bare-metal, in-region absolutes are future work.
 
 ## Endpoints
 
@@ -141,16 +140,19 @@ Performance: a same-host baseline comparison (browserserve vs Browserless vs raw
 
 Chromium isolates every website inside its own sandboxed process. Docker's default security profile blocks the three system calls the sandbox needs (`clone`, `setns`, `unshare`), which is why most browser containers run with `--no-sandbox` and give that protection up. browserserve keeps it.
 
-`docker/seccomp.json` (shipped in this repo) is Docker's default profile plus exactly those three calls. Run with `--security-opt seccomp=docker/seccomp.json` and the sandbox stays on. Without it, browserserve fails closed: sessions refuse to start rather than silently downgrading security, and the error tells you both ways forward. To run without the sandbox anyway, opt out explicitly:
+By default, browserserve keeps it where it can and falls back where it can't. It tries to launch with the sandbox on; if the host blocks it, browserserve logs a warning and relaunches with `--no-sandbox` so the deploy still works. Isolation between sessions is unaffected, because it comes from the fresh, per-session profile directory, not the sandbox.
 
-```yaml
-chrome:
-  noSandbox: true
+To keep the sandbox on in Docker, run with the shipped `docker/seccomp.json` (Docker's default profile plus exactly those three calls):
+
+```bash
+docker run --security-opt seccomp=docker/seccomp.json ... ghcr.io/browser-gateway/browserserve
 ```
+
+For untrusted content, require the sandbox and refuse the fallback with `chrome.requireSandbox: true`. Sessions then fail to start on a host that blocks the sandbox rather than downgrading. To skip the sandbox explicitly, set `chrome.noSandbox: true`.
 
 ## Security
 
-- **Fail closed.** If the sandbox cannot start, sessions refuse to launch rather than silently downgrading (see [Sandbox](#sandbox)).
+- **Sandbox, on by default, with a safe fallback.** The sandbox stays on where the host allows it and falls back to `--no-sandbox` where the host blocks it; isolation between sessions does not depend on the sandbox. Set `chrome.requireSandbox: true` to refuse the fallback and fail closed instead (see [Sandbox](#sandbox)).
 - **Non-root.** The server does all real work as an unprivileged user (uid 999). It starts as root only to self-delegate a per-session cgroup slice when the host allows it, then drops privileges.
 - **Authenticated surface.** When `BROWSERSERVE_TOKEN` is set, the CDP WebSocket and the `/v1/profile*` endpoints require the token; `/live`, `/ready`, and `/pressure` stay open for load balancers.
 
