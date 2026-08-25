@@ -10,8 +10,7 @@
 //!
 //! Field set and drop rules are grounded in Chromium `canonical_cookie.cc`
 //! (`CreateSanitizedCookie`, the `__Host-`/`__Secure-` prefix rules, the
-//! SameSite=None-requires-Secure exclusion) — see
-//! `docs-internal/features/profile-preseed/` D7.
+//! SameSite=None-requires-Secure exclusion).
 
 use serde::{Deserialize, Serialize};
 

@@ -17,6 +17,7 @@ fn spec<'a>(
         executable,
         user_data_dir,
         no_sandbox: false,
+        disable_dev_shm: false,
         extra_flags: &[],
         launch_timeout,
         max_frame_bytes: 64 * 1024 * 1024,

@@ -52,6 +52,7 @@ struct FactoryInner {
     require_sandbox: bool,
     sandbox_disabled: AtomicBool,
     sandbox_blocked: AtomicBool,
+    disable_dev_shm: bool,
     extra_flags: Vec<String>,
     launch_timeout: Duration,
     max_frame_bytes: usize,
@@ -84,6 +85,12 @@ impl ChromeFactory {
         } else {
             None
         };
+        let disable_dev_shm = crate::chrome::flags::small_dev_shm();
+        if disable_dev_shm {
+            tracing::warn!(
+                "/dev/shm is under 512 MiB; launching Chrome with --disable-dev-shm-usage (prevents renderer crashes under concurrency; size /dev/shm to 512 MiB+ (docker run --shm-size=1g) to keep the faster shared-memory path)"
+            );
+        }
         Self {
             inner: Arc::new(FactoryInner {
                 executable,
@@ -91,6 +98,7 @@ impl ChromeFactory {
                 require_sandbox: config.chrome.require_sandbox,
                 sandbox_disabled: AtomicBool::new(config.chrome.no_sandbox),
                 sandbox_blocked: AtomicBool::new(false),
+                disable_dev_shm,
                 extra_flags: config.chrome.extra_flags.clone(),
                 launch_timeout: Duration::from_millis(config.chrome.launch_timeout_ms),
                 max_frame_bytes: config.chrome.max_frame_bytes,
@@ -215,6 +223,7 @@ impl ChromeFactory {
             executable: &self.inner.executable,
             user_data_dir,
             no_sandbox: self.inner.sandbox_disabled.load(Ordering::Relaxed),
+            disable_dev_shm: self.inner.disable_dev_shm,
             extra_flags: &self.inner.extra_flags,
             launch_timeout: self.inner.launch_timeout,
             max_frame_bytes: self.inner.max_frame_bytes,

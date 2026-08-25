@@ -120,6 +120,10 @@ struct Inner<F: SessionFactory> {
     factory: F,
     options: PoolOptions,
     semaphore: Semaphore,
+    /// Live concurrent-session ceiling. Seeded from `options.max_sessions`;
+    /// updated by [`Pool::set_max_sessions`] after boot calibration measures the
+    /// host. The semaphore's permit count is kept in step with this value.
+    max_sessions: AtomicUsize,
     warm: Mutex<VecDeque<Warm<F::Session>>>,
     waiting: AtomicUsize,
     launching: AtomicUsize,
@@ -183,6 +187,7 @@ impl<F: SessionFactory> Pool<F> {
     pub fn new(factory: F, options: PoolOptions) -> Self {
         let inner = Arc::new(Inner {
             semaphore: Semaphore::new(options.max_sessions),
+            max_sessions: AtomicUsize::new(options.max_sessions),
             warm: Mutex::new(VecDeque::new()),
             waiting: AtomicUsize::new(0),
             launching: AtomicUsize::new(0),
@@ -296,9 +301,10 @@ impl<F: SessionFactory> Pool<F> {
         let inner = &self.inner;
         let available = inner.semaphore.available_permits();
         let accepting = !inner.semaphore.is_closed();
+        let max_sessions = inner.max_sessions.load(Ordering::SeqCst);
         PoolStats {
             running: if accepting {
-                inner.options.max_sessions.saturating_sub(available)
+                max_sessions.saturating_sub(available)
             } else {
                 0
             },
@@ -307,9 +313,24 @@ impl<F: SessionFactory> Pool<F> {
                 .load(Ordering::SeqCst)
                 .min(inner.options.max_queue),
             warm: inner.warm_len(),
-            max_sessions: inner.options.max_sessions,
+            max_sessions,
             max_queue: inner.options.max_queue,
             accepting,
+        }
+    }
+
+    /// Sets the concurrent-session ceiling, keeping the capacity semaphore in
+    /// step. Called once after boot calibration measures the host. Growing adds
+    /// permits; shrinking forgets them (only up to the permits currently free, so
+    /// it is safe to call while the pool is idle during calibration). The value
+    /// is floored at 1.
+    pub fn set_max_sessions(&self, target: usize) {
+        let target = target.max(1);
+        let previous = self.inner.max_sessions.swap(target, Ordering::SeqCst);
+        if target > previous {
+            self.inner.semaphore.add_permits(target - previous);
+        } else if target < previous {
+            self.inner.semaphore.forget_permits(previous - target);
         }
     }
 }
@@ -334,14 +355,9 @@ async fn replenisher<F: SessionFactory>(inner: Arc<Inner<F>>) {
 
         let warm = inner.warm_len();
         let launching = inner.launching.load(Ordering::SeqCst);
-        let active = inner
-            .options
-            .max_sessions
-            .saturating_sub(inner.semaphore.available_permits());
-        let headroom = inner
-            .options
-            .max_sessions
-            .saturating_sub(active + warm + launching);
+        let max_sessions = inner.max_sessions.load(Ordering::SeqCst);
+        let active = max_sessions.saturating_sub(inner.semaphore.available_permits());
+        let headroom = max_sessions.saturating_sub(active + warm + launching);
         let wanted = inner
             .options
             .min_ready
@@ -485,6 +501,22 @@ mod tests {
         settle().await;
         assert_eq!(pool.stats().running, 0);
         assert_eq!(factory.destroyed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn set_max_sessions_grows_shrinks_and_floors() {
+        let factory = Arc::new(FakeFactory::default());
+        let pool = Pool::new(Arc::clone(&factory), options(0, 2, 2));
+        assert_eq!(pool.stats().max_sessions, 2);
+        pool.set_max_sessions(5);
+        assert_eq!(pool.stats().max_sessions, 5);
+        assert_eq!(pool.inner.semaphore.available_permits(), 5);
+        pool.set_max_sessions(3);
+        assert_eq!(pool.stats().max_sessions, 3);
+        assert_eq!(pool.inner.semaphore.available_permits(), 3);
+        pool.set_max_sessions(0);
+        assert_eq!(pool.stats().max_sessions, 1, "floored at 1");
+        assert_eq!(pool.inner.semaphore.available_permits(), 1);
     }
 
     #[tokio::test]

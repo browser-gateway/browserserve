@@ -42,12 +42,15 @@ pub async fn live() -> &'static str {
 /// `GET /ready`: a session could be served right now.
 pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
     let pool_stats = state.pool.stats();
-    let ready = !state.factory.sandbox_required_but_unavailable()
+    let calibrating = state.calibrating.load(std::sync::atomic::Ordering::Relaxed);
+    let ready = !calibrating
+        && !state.factory.sandbox_required_but_unavailable()
         && pool_stats.accepting
         && (pool_stats.warm > 0 || pool_stats.running < pool_stats.max_sessions);
     let body = axum::Json(json!({
         "ready": ready,
         "warm": pool_stats.warm,
+        "calibrating": calibrating,
         "sandbox": state.factory.sandbox_state(),
     }));
     if ready {
@@ -143,6 +146,7 @@ pub async fn json_version(
         "webSocketDebuggerUrl": ws_url,
         "Browserserve-Version": env!("CARGO_PKG_VERSION"),
         "Browserserve-MaxConcurrent": state.pool.stats().max_sessions,
+        "Browserserve-Calibrating": state.calibrating.load(std::sync::atomic::Ordering::Relaxed),
     }))
     .into_response()
 }

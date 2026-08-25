@@ -107,6 +107,7 @@ async fn run_check(
         executable: &executable,
         user_data_dir: &dirs.user_data_dir,
         no_sandbox,
+        disable_dev_shm: chrome::flags::small_dev_shm(),
         extra_flags: &cfg.chrome.extra_flags,
         launch_timeout: Duration::from_millis(cfg.chrome.launch_timeout_ms),
         max_frame_bytes: cfg.chrome.max_frame_bytes,
@@ -233,7 +234,11 @@ fn run_doctor(
             let available_mb = stat.blocks_available() * stat.fragment_size() / (1024 * 1024);
             println!("/dev/shm       {available_mb} MiB available");
             if available_mb < 512 {
-                println!("               warning: run the container with --shm-size=1g or larger");
+                println!(
+                    "               warning: run the container with --shm-size=1g or larger \
+                     (Chrome uses /dev/shm for cross-process shared memory; too little of it \
+                     causes renderer crashes, not just slowdowns)"
+                );
             }
         }
         Err(_) => println!("/dev/shm       unknown"),

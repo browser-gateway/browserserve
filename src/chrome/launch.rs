@@ -171,6 +171,8 @@ pub struct LaunchSpec<'a> {
     pub user_data_dir: &'a Path,
     /// Launch with `--no-sandbox`.
     pub no_sandbox: bool,
+    /// Launch with `--disable-dev-shm-usage` (set when `/dev/shm` is too small).
+    pub disable_dev_shm: bool,
     /// Extra flags appended after the built-in set.
     pub extra_flags: &'a [String],
     /// Budget for the browser to become CDP-ready.
@@ -226,6 +228,7 @@ pub async fn launch(spec: &LaunchSpec<'_>) -> Result<Browser, LaunchError> {
     let args = build_flags(&FlagOptions {
         user_data_dir: spec.user_data_dir,
         no_sandbox: spec.no_sandbox,
+        disable_dev_shm: spec.disable_dev_shm,
         extra: spec.extra_flags,
     });
     let mut command = Command::new(spec.executable);

@@ -39,8 +39,20 @@ const USABLE_DEN: u64 = 5;
 const SESSIONS_PER_CPU: u32 = 2;
 const AUTO_CEILING: u32 = 256;
 
-/// Derives the session ceiling from host limits and a measured footprint.
-/// Explicit operator configuration is applied by the caller and always wins.
+/// Conservative per-session cost used before a browser has been measured on this
+/// host. ~800 MB covers a recording session (screencast plus a loaded page); ~160
+/// threads is a full headless Chrome process tree. Deliberately errs high so the
+/// derived ceiling under-counts rather than over-advertises.
+const SESSION_ESTIMATE: SessionFootprint = SessionFootprint {
+    bytes: 800 * 1024 * 1024,
+    threads: 160,
+};
+
+/// Derives the session ceiling from host limits and, when available, a measured
+/// footprint. Before any browser is measured it uses a conservative per-session
+/// estimate rather than the CPU count alone, so the memory and thread ceilings
+/// still apply. Explicit operator configuration is applied by the caller and
+/// always wins.
 #[must_use]
 pub fn compute(limits: HostLimits, footprint: Option<SessionFootprint>) -> Capacity {
     let cpu_bound = u64::from(limits.cpus.max(1)) * u64::from(SESSIONS_PER_CPU);
@@ -53,18 +65,17 @@ pub fn compute(limits: HostLimits, footprint: Option<SessionFootprint>) -> Capac
         }
     };
 
-    if let Some(fp) = footprint {
-        let mem = limits
-            .mem_ceiling_bytes
-            .filter(|_| fp.bytes > 0)
-            .map(|ceiling| ceiling / USABLE_DEN * USABLE_NUM / fp.bytes);
-        consider(mem, "memory");
-        let pids = limits
-            .pids_max
-            .filter(|_| fp.threads > 0)
-            .map(|max| max / USABLE_DEN * USABLE_NUM / fp.threads);
-        consider(pids, "pids");
-    }
+    let fp = footprint.unwrap_or(SESSION_ESTIMATE);
+    let mem = limits
+        .mem_ceiling_bytes
+        .filter(|_| fp.bytes > 0)
+        .map(|ceiling| ceiling / USABLE_DEN * USABLE_NUM / fp.bytes);
+    consider(mem, "memory");
+    let pids = limits
+        .pids_max
+        .filter(|_| fp.threads > 0)
+        .map(|max| max / USABLE_DEN * USABLE_NUM / fp.threads);
+    consider(pids, "pids");
 
     let (value, bound_by) = best;
     Capacity {
@@ -170,10 +181,20 @@ mod tests {
     }
 
     #[test]
-    fn no_measurement_still_yields_cpu_bound() {
+    fn no_measurement_uses_conservative_estimate_not_cpu_only() {
+        // 8 GB, pids=1000, 8 CPU: with no measured browser, the estimate still
+        // applies the thread ceiling, which binds at 1000*0.8/160=5 (NOT CPU's 16).
         let cap = compute(limits(Some(8), Some(1000), 8), None);
-        assert_eq!(cap.bound_by, "cpu");
-        assert_eq!(cap.max_sessions, 16);
+        assert_eq!(cap.bound_by, "pids");
+        assert_eq!(cap.max_sessions, 1000 / 5 * 4 / 160);
+    }
+
+    #[test]
+    fn estimate_binds_on_memory_when_threads_unlimited() {
+        // 32 GB, no pids cap, 32 CPU: memory binds (32*0.8/0.8=32), under CPU's 64.
+        let cap = compute(limits(Some(32), None, 32), None);
+        assert_eq!(cap.bound_by, "memory");
+        assert!(cap.max_sessions >= 24 && cap.max_sessions <= 40);
     }
 
     #[test]

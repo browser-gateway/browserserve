@@ -68,6 +68,14 @@ pub async fn ws_handler(
         );
     }
 
+    if state.calibrating.load(std::sync::atomic::Ordering::Relaxed) {
+        return reject(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "calibrating",
+            "measuring host capacity; retry shortly",
+        );
+    }
+
     // Profile session: claim the dropped-off profile, launch a fresh browser
     // with its native layer already on disk, inject the portable core, serve,
     // then capture back. Bypasses the warm pool (a warm browser is already

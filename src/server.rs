@@ -5,7 +5,7 @@ pub mod http;
 pub mod profiles;
 pub mod ws;
 
-use crate::config::{Loaded, PressureConfig};
+use crate::config::{Loaded, PressureConfig, RuntimeConfig};
 use crate::factory::ChromeFactory;
 use crate::pool::{Pool, PoolOptions};
 use crate::pressure::PressureGauge;
@@ -15,6 +15,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{any, get, post};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -54,6 +55,10 @@ pub struct AppState {
     /// WS bridge. `None` disables. Sourced from `session.idleTimeoutMs` or the
     /// `BROWSERSERVE_IDLE_TIMEOUT_MS` env var.
     pub idle_timeout: Option<Duration>,
+    /// True while boot capacity calibration is running. The server binds and
+    /// answers health/discovery, but refuses sessions and reports not-ready so
+    /// calibration has the host to itself. Cleared once the ceiling is set.
+    pub calibrating: Arc<AtomicBool>,
 }
 
 /// Builds the router: probe routes carry an HTTP timeout; the WS route does
@@ -112,22 +117,12 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
     // template build (and warm-pool prewarm) happen in the background AFTER the
     // port is bound, so a slow or failing boot Chrome can never delay the bind.
     let factory = ChromeFactory::new(&config, executable.clone(), tiers.clone());
-    let (max_sessions, capacity_source) = if let Some(explicit) = config.pool.max_sessions {
-        (explicit, "config")
-    } else {
-        let limits = crate::capacity::probe_host();
-        let cap = crate::capacity::compute(limits, factory.template_footprint());
-        tracing::info!(
-            max_sessions = cap.max_sessions,
-            bound_by = cap.bound_by,
-            mem_ceiling_bytes = limits.mem_ceiling_bytes,
-            pids_max = limits.pids_max,
-            cpus = limits.cpus,
-            measured = factory.template_footprint().is_some(),
-            "auto capacity resolved"
-        );
-        (cap.max_sessions, cap.bound_by)
-    };
+    let (max_sessions, capacity_source) = resolve_capacity(&config, &factory);
+    // Calibrate only when the operator left the ceiling to us AND did not opt out.
+    // An explicit maxSessions or calibrate:false uses the value above directly.
+    let will_calibrate = config.pool.max_sessions.is_none() && config.pool.calibrate;
+    let calibrating = Arc::new(AtomicBool::new(will_calibrate));
+
     let pool = Pool::new(
         factory.clone(),
         PoolOptions {
@@ -155,6 +150,7 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         profiles: ProfileStore::new(PROFILE_TTL, MAX_PENDING),
         idle_timeout: (config.session.idle_timeout_ms > 0)
             .then(|| Duration::from_millis(config.session.idle_timeout_ms)),
+        calibrating: calibrating.clone(),
     });
 
     let bind = format!("{}:{}", loaded.serve.host, loaded.serve.port);
@@ -171,6 +167,13 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
     if config.pool.min_ready > 0 {
         let warm = state.factory.clone();
         tokio::spawn(async move { warm.prepare_template().await });
+    }
+
+    // Boot capacity calibration: measure the host's real ceiling in the
+    // background while the server reports not-ready and refuses sessions, then
+    // set the pool ceiling and open for business. Never blocks the bind above.
+    if will_calibrate {
+        spawn_calibration(&state, pool.clone(), calibrating.clone());
     }
 
     let shutdown_pool = pool.clone();
@@ -201,6 +204,48 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         tracing::info!(count = swept, "swept session dirs on shutdown");
     }
     Ok(())
+}
+
+/// Resolves the startup session ceiling without launching a browser: an explicit
+/// `maxSessions` wins; otherwise the host estimate (refined later by calibration).
+fn resolve_capacity(config: &RuntimeConfig, factory: &ChromeFactory) -> (u32, &'static str) {
+    if let Some(explicit) = config.pool.max_sessions {
+        return (explicit, "config");
+    }
+    let limits = crate::capacity::probe_host();
+    let cap = crate::capacity::compute(limits, factory.template_footprint());
+    tracing::info!(
+        max_sessions = cap.max_sessions,
+        bound_by = cap.bound_by,
+        mem_ceiling_bytes = limits.mem_ceiling_bytes,
+        pids_max = limits.pids_max,
+        cpus = limits.cpus,
+        measured = factory.template_footprint().is_some(),
+        "auto capacity resolved"
+    );
+    (cap.max_sessions, cap.bound_by)
+}
+
+/// Spawns the background calibration task: measures the host ceiling, sets the
+/// pool cap, and clears the not-ready flag. Tracked so it cannot outlive drain.
+pub(crate) fn spawn_calibration(
+    state: &Arc<AppState>,
+    pool: Pool<ChromeFactory>,
+    calibrating: Arc<AtomicBool>,
+) {
+    let factory = state.factory.clone();
+    let limits = crate::capacity::probe_host();
+    state.tracker.spawn(async move {
+        tracing::info!("capacity calibration starting; refusing sessions until it completes");
+        let cap = crate::calibrate::calibrate(&factory, limits).await;
+        pool.set_max_sessions(cap.max_sessions as usize);
+        calibrating.store(false, Ordering::SeqCst);
+        tracing::info!(
+            max_sessions = cap.max_sessions,
+            bound_by = cap.bound_by,
+            "capacity calibration set the ceiling; now accepting sessions"
+        );
+    });
 }
 
 async fn shutdown_signal() {

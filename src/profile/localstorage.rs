@@ -8,8 +8,7 @@
 //! are skipped.
 //!
 //! Verified against Chromium `local_storage_impl.cc` + `cached_storage_area.cc`
-//! (`StorageFormat` 0=UTF16/1=Latin1) and CCL's forensic parser — see
-//! `docs-internal/features/profile-localstorage/REFERENCES.md`. Partitioned
+//! (`StorageFormat` 0=UTF16/1=Latin1) and CCL's forensic parser. Partitioned
 //! (third-party) keys serialize the whole `blink::StorageKey`
 //! (`https://a.com/^0https://b.com`); those are NOT plain origins and cannot be
 //! replayed as first-party, so they are skipped (detected by `^`).

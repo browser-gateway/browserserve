@@ -3,6 +3,7 @@
 
 pool:
   minReady: 1              # browsers kept warm ahead of demand; 0 = scale-to-zero (launch on demand). Env: BROWSERSERVE_MIN_READY
+  calibrate: true          # measure the host's real session ceiling at boot; false uses a conservative estimate. Env: BROWSERSERVE_CALIBRATE
   # maxSessions: 10        # hard ceiling; unset = auto (derived from the host's
   #                          # real memory/pids/cpu limits and a measured browser)
   maxQueue: 10             # clients allowed to wait for a slot before rejection

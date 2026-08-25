@@ -37,6 +37,10 @@ pub enum ConfigError {
 pub struct PoolConfig {
     /// Browsers kept launched and ready ahead of demand.
     pub min_ready: u32,
+    /// Measure the host's real session ceiling at boot (a short calibration that
+    /// launches recording sessions) instead of using the conservative estimate.
+    /// On by default; set false to skip it and use the estimate immediately.
+    pub calibrate: bool,
     /// Hard ceiling of concurrent claimed sessions. Unset means auto:
     /// derived at startup from the host's real limits and a measured browser
     /// footprint (see `capacity`).
@@ -55,6 +59,7 @@ impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             min_ready: 1,
+            calibrate: true,
             max_sessions: None,
             max_queue: 10,
             queue_timeout_ms: 30_000,
@@ -224,7 +229,7 @@ fn is_truthy(value: &str) -> bool {
 /// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_NO_SANDBOX`,
 /// `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`,
 /// `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`,
-/// `BROWSERSERVE_MEMORY_MAX_MB`. Returns a
+/// `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CALIBRATE`. Returns a
 /// validated [`Loaded`].
 ///
 /// # Errors
@@ -249,6 +254,9 @@ pub fn load<S: std::hash::BuildHasher>(
     }
     if let Some(value) = env.get("BROWSERSERVE_REQUIRE_SANDBOX") {
         config.chrome.require_sandbox = is_truthy(value);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_CALIBRATE") {
+        config.pool.calibrate = is_truthy(value);
     }
     if let Some(value) = env.get("BROWSERSERVE_MIN_READY") {
         config.pool.min_ready = value.trim().parse().map_err(|_| {
@@ -455,6 +463,13 @@ dataDir: /var/lib/bgr
         assert!(loaded.config.chrome.require_sandbox);
         let off = load(None, &env(&[("BROWSERSERVE_REQUIRE_SANDBOX", "no")])).unwrap();
         assert!(!off.config.chrome.require_sandbox);
+    }
+
+    #[test]
+    fn calibrate_defaults_on_and_env_disables() {
+        assert!(load(None, &HashMap::new()).unwrap().config.pool.calibrate);
+        let off = load(None, &env(&[("BROWSERSERVE_CALIBRATE", "false")])).unwrap();
+        assert!(!off.config.pool.calibrate);
     }
 
     #[test]
