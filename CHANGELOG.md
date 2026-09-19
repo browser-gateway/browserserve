@@ -4,6 +4,22 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-09-19
+
+### Fixed
+- Per-session cgroup limits now cover every Chrome process. The browser is started inside its cgroup leaf (join, then exec) instead of being moved in after launch, which left the zygote, GPU and renderer processes outside the limit.
+- `session.memoryMaxMb` default documented as `0` (disabled), matching the code.
+
+### Added
+- `session.cpuPercent` / `BROWSERSERVE_CPU_PERCENT`: per-session CPU cap as a percentage of one core (`cpu.max`). Default `0` (off).
+- `session.pidsMax` / `BROWSERSERVE_PIDS_MAX`: per-session cap on processes plus threads (`pids.max`). Default `0` (off).
+- Startup reports which per-session limits the host can enforce (`cgroup limits: memoryMaxMb ..., cpuPercent ..., pidsMax ...`).
+- Every refused session is logged at INFO with its reason (`pressure`, `queue_full`, `queue_timeout`, `draining`, `launch_failed`, `calibrating`).
+
+### Changed
+- Container entrypoint also delegates the `cpu` controller and prints a clear message when it cannot move the runtime into its own cgroup (previously silent).
+- Kernel-enforced limits in Docker need a private, writable cgroup: `docker run --cgroupns=private --security-opt writable-cgroups=true` (Docker Engine 28+). Bind-mounting the host's `/sys/fs/cgroup` does not provide this on most Linux hosts.
+
 ## [0.1.10] - 2026-08-25
 
 ### Added

@@ -38,7 +38,7 @@ Running headless Chrome in production is an operations problem: sessions leak st
 - **Warm pool, or scale to zero.** Browsers are pre-launched and ready before clients connect; the pool grows under load to a ceiling, queues briefly when full, and shrinks when idle. Set `pool.minReady: 0` for scale-to-zero: no browser runs while idle, and one launches on demand at the first connection. You trade a higher first-request latency for near-zero idle browser cost, which suits pay-as-you-go hosts.
 - **Instant startup.** The server binds and answers `/json/version` in well under a second, then warms browsers in the background. It never blocks startup on a browser launch, so it comes up cleanly even on a slow or constrained host.
 - **Capacity derived from the host.** If you don't set a ceiling, browserserve measures the host's real limits (available memory, the PID/thread budget, CPU count) and a launched browser's footprint, then picks a safe maximum. On PID-capped containers the thread budget is often the real limit, not memory, so a box with plenty of free RAM can still cap out around a handful of browsers. `GET /pressure` reports the ceiling and which limit set it.
-- **Tier-detected resource control.** On a delegated Linux host, each session runs in its own cgroup with a kernel-enforced memory cap and one-syscall tree-kill; elsewhere, a portable RSS soft-cap applies. `browserserve doctor` reports the active tier.
+- **Tier-detected resource control.** On a delegated Linux host, each browser is started inside its own cgroup, so kernel-enforced memory, CPU and process limits cover every process of that session, with a one-syscall tree-kill; elsewhere, a portable RSS soft-cap applies. In Docker (Engine 28+) a delegated host means `docker run --cgroupns=private --security-opt writable-cgroups=true`. `browserserve doctor` reports the active tier and which limits are enforceable.
 - **CDP over pipes, not ports.** Internally, browsers speak CDP over process pipes. No localhost port pool, no port exhaustion, no scannable debug ports.
 - **A pinned browser.** The image ships the same pinned Chromium milestone on amd64 and arm64, verified by checksum at build time.
 
@@ -168,7 +168,9 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 | `pool.maxSessions` | unset (auto) | Hard ceiling of concurrent browsers. **Left unset, it is derived from the host** (memory, PID/thread budget, CPUs). |
 | `pool.maxQueue` | `10` | Clients allowed to wait for a slot before rejection. |
 | `pool.queueTimeoutMs` | `30000` | How long a queued client waits before a 503. |
-| `session.memoryMaxMb` | `2048` | Per-session memory cap (kernel-enforced on a delegated host, RSS soft-cap otherwise; `0` = uncapped). |
+| `session.memoryMaxMb` | `0` | Per-session memory cap (kernel-enforced on a delegated host, RSS soft-cap otherwise; `0` = uncapped). |
+| `session.cpuPercent` | `0` | Per-session CPU cap as a percentage of one core (`100` = one core, `150` = one and a half). Kernel-enforced on a delegated host only; `0` = uncapped. |
+| `session.pidsMax` | `0` | Per-session cap on processes plus threads. Kernel-enforced on a delegated host only; `0` = uncapped. |
 | `session.maxSessionMs` | `0` | Maximum session lifetime; `0` = unlimited. |
 | `session.killGraceMs` | `5000` | SIGTERM-to-SIGKILL grace during teardown. |
 | `pressure.maxCpuPercent` | `95` | Reject new sessions above this host CPU usage. |
