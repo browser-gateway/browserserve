@@ -62,6 +62,10 @@ struct FactoryInner {
     max_frame_bytes: usize,
     kill_grace: Duration,
     memory_max_bytes: u64,
+    #[cfg(target_os = "linux")]
+    cpu_percent: u32,
+    #[cfg(target_os = "linux")]
+    pids_max: u32,
     data_dir: PathBuf,
     tiers: Tiers,
     version: Mutex<Option<BrowserVersion>>,
@@ -111,6 +115,10 @@ impl ChromeFactory {
                 max_frame_bytes: config.chrome.max_frame_bytes,
                 kill_grace: Duration::from_millis(config.session.kill_grace_ms),
                 memory_max_bytes: config.session.memory_max_mb.saturating_mul(1024 * 1024),
+                #[cfg(target_os = "linux")]
+                cpu_percent: config.session.cpu_percent,
+                #[cfg(target_os = "linux")]
+                pids_max: config.session.pids_max,
                 data_dir: config.data_dir.clone(),
                 tiers,
                 version: Mutex::new(None),
@@ -501,6 +509,16 @@ impl ChromeFactory {
             && let Err(e) = leaf.set_memory_max(self.inner.memory_max_bytes)
         {
             tracing::warn!(error = %e, "cgroup: memory.max write failed");
+        }
+        if self.inner.cpu_percent > 0
+            && let Err(e) = leaf.set_cpu_percent(self.inner.cpu_percent)
+        {
+            tracing::warn!(error = %e, "cgroup: cpu.max write failed (is the cpu controller delegated?)");
+        }
+        if self.inner.pids_max > 0
+            && let Err(e) = leaf.set_pids_max(self.inner.pids_max)
+        {
+            tracing::warn!(error = %e, "cgroup: pids.max write failed (is the pids controller delegated?)");
         }
         Some(leaf)
     }

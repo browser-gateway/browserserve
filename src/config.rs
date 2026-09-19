@@ -80,6 +80,12 @@ pub struct SessionConfig {
     pub idle_timeout_ms: u64,
     /// Per-session memory cap in MiB, enforced via cgroups on Linux. `0` disables.
     pub memory_max_mb: u64,
+    /// Per-session CPU cap as a percentage of one core (`100` = one full core,
+    /// `150` = one and a half), enforced via cgroups on Linux. `0` disables.
+    pub cpu_percent: u32,
+    /// Per-session cap on processes plus threads, enforced via cgroups on
+    /// Linux. `0` disables.
+    pub pids_max: u32,
     /// Size cap for the RAM-backed session dir tier on Linux, in MiB.
     pub tmpfs_size_mb: u64,
     /// Grace period between SIGTERM and SIGKILL during teardown, in milliseconds.
@@ -91,6 +97,8 @@ impl Default for SessionConfig {
         Self {
             idle_timeout_ms: 0,
             memory_max_mb: 0,
+            cpu_percent: 0,
+            pids_max: 0,
             tmpfs_size_mb: 512,
             kill_grace_ms: 5_000,
         }
@@ -229,7 +237,8 @@ fn is_truthy(value: &str) -> bool {
 /// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_NO_SANDBOX`,
 /// `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`,
 /// `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`,
-/// `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CALIBRATE`. Returns a
+/// `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`,
+/// `BROWSERSERVE_CALIBRATE`. Returns a
 /// validated [`Loaded`].
 ///
 /// # Errors
@@ -276,6 +285,20 @@ pub fn load<S: std::hash::BuildHasher>(
         config.session.memory_max_mb = value.trim().parse().map_err(|_| {
             ConfigError::Invalid(format!(
                 "BROWSERSERVE_MEMORY_MAX_MB must be a non-negative integer, got {value:?}"
+            ))
+        })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_CPU_PERCENT") {
+        config.session.cpu_percent = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_CPU_PERCENT must be a non-negative integer, got {value:?}"
+            ))
+        })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_PIDS_MAX") {
+        config.session.pids_max = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_PIDS_MAX must be a non-negative integer, got {value:?}"
             ))
         })?;
     }
@@ -537,6 +560,33 @@ dataDir: /var/lib/bgr
     fn memory_max_mb_default_is_disabled() {
         let loaded = load(None, &HashMap::new()).unwrap();
         assert_eq!(loaded.config.session.memory_max_mb, 0);
+    }
+
+    #[test]
+    fn cpu_and_pids_caps_default_to_disabled() {
+        let loaded = load(None, &HashMap::new()).unwrap();
+        assert_eq!(loaded.config.session.cpu_percent, 0);
+        assert_eq!(loaded.config.session.pids_max, 0);
+    }
+
+    #[test]
+    fn cpu_and_pids_caps_env_override_yaml() {
+        let loaded = load(
+            Some("session:\n  cpuPercent: 50\n  pidsMax: 400\n"),
+            &env(&[
+                ("BROWSERSERVE_CPU_PERCENT", "150"),
+                ("BROWSERSERVE_PIDS_MAX", "600"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(loaded.config.session.cpu_percent, 150);
+        assert_eq!(loaded.config.session.pids_max, 600);
+    }
+
+    #[test]
+    fn cpu_percent_env_rejects_garbage() {
+        let err = load(None, &env(&[("BROWSERSERVE_CPU_PERCENT", "1.5")])).unwrap_err();
+        assert!(err.to_string().contains("BROWSERSERVE_CPU_PERCENT"));
     }
 
     #[test]

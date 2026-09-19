@@ -50,6 +50,7 @@ fn probe_cgroup(notes: &mut Vec<String>) -> (MemCapTier, KillTier) {
         Ok(leaf) => {
             let writable = leaf.set_memory_max(0).is_ok();
             let can_kill = leaf.supports_kill();
+            let leaf_controllers = cgroup::available_controllers(leaf.dir());
             // Verify a real process migration, not merely that memory.max is
             // writable: a delegated subtree can still refuse cgroup.procs writes
             // (EACCES) when it is not the common ancestor of the runtime and the
@@ -63,6 +64,7 @@ fn probe_cgroup(notes: &mut Vec<String>) -> (MemCapTier, KillTier) {
                 notes.push(String::from(
                     "cgroup: memory.max writable and process migration works; hard cap active",
                 ));
+                notes.push(limits_note(&leaf_controllers));
                 let kill = if can_kill {
                     KillTier::CgroupKill
                 } else {
@@ -95,6 +97,24 @@ fn probe_cgroup(notes: &mut Vec<String>) -> (MemCapTier, KillTier) {
 /// whether it could. Conservative on any error: a host we cannot verify is treated as
 /// unable to migrate, so we fall back to the RSS soft cap rather than claim a
 /// hard cap we cannot apply.
+/// Which per-session limits the delegated leaf can enforce, from the
+/// controllers actually present in it.
+fn limits_note(controllers: &[String]) -> String {
+    let state = |name: &str| {
+        if controllers.iter().any(|c| c == name) {
+            "enforceable"
+        } else {
+            "not delegated"
+        }
+    };
+    format!(
+        "cgroup limits: memoryMaxMb {}, cpuPercent {}, pidsMax {}",
+        state("memory"),
+        state("cpu"),
+        state("pids")
+    )
+}
+
 fn probe_attach(leaf: &cgroup::Cgroup) -> bool {
     // Same join-then-exec path a browser launch uses, so the tier is proven
     // with the real mechanism (including the presence of the shell).
@@ -132,5 +152,19 @@ fn probe_profile(data_dir: &Path, notes: &mut Vec<String>) -> ProfileTier {
             notes.push(format!("profile: reflink probe failed ({e}); plain-copy"));
             ProfileTier::PlainCopy
         }
+    }
+}
+
+#[cfg(test)]
+mod limits_note_tests {
+    use super::limits_note;
+
+    #[test]
+    fn reports_each_limit_by_its_own_controller() {
+        let controllers = vec![String::from("memory"), String::from("pids")];
+        assert_eq!(
+            limits_note(&controllers),
+            "cgroup limits: memoryMaxMb enforceable, cpuPercent not delegated, pidsMax enforceable"
+        );
     }
 }

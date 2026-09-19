@@ -15,6 +15,9 @@ const PROCS: &str = "cgroup.procs";
 const SUBTREE_CONTROL: &str = "cgroup.subtree_control";
 const CONTROLLERS: &str = "cgroup.controllers";
 const MEMORY_MAX: &str = "memory.max";
+const CPU_MAX: &str = "cpu.max";
+const PIDS_MAX: &str = "pids.max";
+const CPU_PERIOD_MICROS: u64 = 100_000;
 const KILL: &str = "cgroup.kill";
 const REMOVE_ATTEMPTS: u32 = 4;
 
@@ -76,6 +79,14 @@ pub fn enable_memory_controller(dir: &Path) -> Result<(), CgroupError> {
     write(&dir.join(SUBTREE_CONTROL), "+memory")
 }
 
+fn cpu_max_value(percent: u32) -> String {
+    if percent == 0 {
+        return format!("max {CPU_PERIOD_MICROS}");
+    }
+    let quota = u64::from(percent) * CPU_PERIOD_MICROS / 100;
+    format!("{quota} {CPU_PERIOD_MICROS}")
+}
+
 /// A per-session cgroup leaf. Dropping it does NOT remove the cgroup; call
 /// [`Cgroup::kill_and_remove`] explicitly during teardown.
 pub struct Cgroup {
@@ -118,6 +129,31 @@ impl Cgroup {
             bytes.to_string()
         };
         write(&self.dir.join(MEMORY_MAX), &value)
+    }
+
+    /// Sets the CPU ceiling as a percentage of one core (`150` = one and a
+    /// half cores). Zero means unlimited (`"max"`).
+    ///
+    /// # Errors
+    ///
+    /// [`CgroupError::Io`] when `cpu.max` cannot be written (for example the
+    /// cpu controller is not delegated to this leaf).
+    pub fn set_cpu_percent(&self, percent: u32) -> Result<(), CgroupError> {
+        write(&self.dir.join(CPU_MAX), &cpu_max_value(percent))
+    }
+
+    /// Sets the ceiling on processes plus threads. Zero means unlimited (`"max"`).
+    ///
+    /// # Errors
+    ///
+    /// [`CgroupError::Io`] when `pids.max` cannot be written.
+    pub fn set_pids_max(&self, limit: u32) -> Result<(), CgroupError> {
+        let value = if limit == 0 {
+            String::from("max")
+        } else {
+            limit.to_string()
+        };
+        write(&self.dir.join(PIDS_MAX), &value)
     }
 
     /// Whether `cgroup.kill` (kernel ≥5.14) is available in this cgroup.
@@ -175,6 +211,29 @@ mod tests {
         };
         cg.set_memory_max(1_048_576).unwrap();
         assert_eq!(read(&tmp.path().join(MEMORY_MAX)).unwrap(), "1048576");
+    }
+
+    #[test]
+    fn cpu_max_is_quota_and_period_in_microseconds() {
+        assert_eq!(cpu_max_value(0), "max 100000");
+        assert_eq!(cpu_max_value(50), "50000 100000");
+        assert_eq!(cpu_max_value(100), "100000 100000");
+        assert_eq!(cpu_max_value(150), "150000 100000");
+        assert_eq!(cpu_max_value(u32::MAX), "4294967295000 100000");
+    }
+
+    #[test]
+    fn cpu_and_pids_limits_write_their_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cg = Cgroup {
+            dir: tmp.path().to_path_buf(),
+        };
+        cg.set_cpu_percent(150).unwrap();
+        cg.set_pids_max(600).unwrap();
+        assert_eq!(read(&tmp.path().join(CPU_MAX)).unwrap(), "150000 100000");
+        assert_eq!(read(&tmp.path().join(PIDS_MAX)).unwrap(), "600");
+        cg.set_pids_max(0).unwrap();
+        assert_eq!(read(&tmp.path().join(PIDS_MAX)).unwrap(), "max");
     }
 
     #[test]

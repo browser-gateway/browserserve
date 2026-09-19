@@ -25,13 +25,16 @@ try_delegate() {
   mkdir -p "$CG/sessions/supervisor" 2>/dev/null || return 1
   # "No internal process" rule: move PID 1 (and this shell) out of the root into
   # the supervisor leaf before enabling any controller on the root or sessions.
-  echo 1 > "$CG/sessions/supervisor/cgroup.procs" 2>/dev/null || true
+  if ! echo 1 > "$CG/sessions/supervisor/cgroup.procs" 2>/dev/null; then
+    echo "entrypoint: could not move the runtime into $CG/sessions/supervisor; per-session limits will not apply (run with a private, writable cgroup: docker run --cgroupns=private --security-opt writable-cgroups=true)" >&2
+  fi
   echo $$ > "$CG/sessions/supervisor/cgroup.procs" 2>/dev/null || true
-  # Enable memory + pids one level at a time: root -> sessions -> leaves.
-  echo "+memory" > "$CG/cgroup.subtree_control" 2>/dev/null || true
-  echo "+pids" > "$CG/cgroup.subtree_control" 2>/dev/null || true
-  echo "+memory" > "$CG/sessions/cgroup.subtree_control" 2>/dev/null || true
-  echo "+pids" > "$CG/sessions/cgroup.subtree_control" 2>/dev/null || true
+  # Enable each controller one level at a time: root -> sessions -> leaves.
+  # A controller the host did not delegate is skipped; its limit stays inactive.
+  for controller in memory pids cpu; do
+    echo "+$controller" > "$CG/cgroup.subtree_control" 2>/dev/null || true
+    echo "+$controller" > "$CG/sessions/cgroup.subtree_control" 2>/dev/null || true
+  done
   # Hand the whole sessions subtree (supervisor + future session leaves, and the
   # sessions dir's own cgroup.procs = the migration ancestor) to the runtime user.
   chown -R "$RUNTIME_UID:$RUNTIME_GID" "$CG/sessions" 2>/dev/null || return 1
