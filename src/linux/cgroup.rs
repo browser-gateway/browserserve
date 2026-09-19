@@ -233,4 +233,64 @@ mod tests {
         assert!(!used, "no cgroup.kill file means kill was not used");
         assert!(!leaf.exists(), "an empty leaf must be removed");
     }
+
+    fn writable_test_leaf(name: &str) -> Option<Cgroup> {
+        let base = own_cgroup_dir()?;
+        let leaf = Cgroup::create(&base, name).ok()?;
+        leaf.dir().join(PROCS).exists().then_some(leaf)
+    }
+
+    fn pids_in(leaf: &Cgroup) -> Vec<String> {
+        read(&leaf.dir().join(PROCS))
+            .map(|s| s.lines().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    // Needs a writable cgroup v2 subtree (for example a container started with
+    // a private cgroup namespace and a writable cgroup); skips elsewhere.
+    #[tokio::test]
+    async fn a_program_born_in_a_leaf_keeps_its_whole_tree_there() {
+        let Some(leaf) = writable_test_leaf(&format!("bs-born-{}", std::process::id())) else {
+            eprintln!("skipped: no writable cgroup v2 subtree");
+            return;
+        };
+        let mut command =
+            crate::chrome::launch::browser_command(Path::new("/bin/sh"), Some(leaf.dir()));
+        command.arg("-c").arg("sleep 20 & sleep 20 & wait");
+        let mut child = command.spawn().unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let inside = pids_in(&leaf);
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        leaf.kill_and_remove().await;
+        assert!(
+            inside.len() >= 3,
+            "parent and both children must be in the leaf, got {inside:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn attaching_after_the_fork_leaves_the_children_outside() {
+        let Some(leaf) = writable_test_leaf(&format!("bs-late-{}", std::process::id())) else {
+            eprintln!("skipped: no writable cgroup v2 subtree");
+            return;
+        };
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 20 & sleep 20 & wait")
+            .spawn()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let attached = i32::try_from(child.id().unwrap()).is_ok_and(|pid| leaf.attach(pid).is_ok());
+        let inside = pids_in(&leaf);
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        leaf.kill_and_remove().await;
+        assert!(attached);
+        assert_eq!(
+            inside.len(),
+            1,
+            "a late attach moves only the one pid, got {inside:?}"
+        );
+    }
 }

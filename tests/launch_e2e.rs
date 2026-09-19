@@ -21,6 +21,7 @@ fn spec<'a>(
         extra_flags: &[],
         launch_timeout,
         max_frame_bytes: 64 * 1024 * 1024,
+        cgroup_leaf: None,
     }
 }
 

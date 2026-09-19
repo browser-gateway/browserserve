@@ -111,6 +111,7 @@ async fn run_check(
         extra_flags: &cfg.chrome.extra_flags,
         launch_timeout: Duration::from_millis(cfg.chrome.launch_timeout_ms),
         max_frame_bytes: cfg.chrome.max_frame_bytes,
+        cgroup_leaf: None,
     };
     let mut sandbox = if cfg.chrome.no_sandbox {
         "off (config)"

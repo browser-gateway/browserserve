@@ -1,7 +1,9 @@
 //! The pool's session factory: real Chrome launches with tier-aware isolation.
 
 use crate::capacity::SessionFootprint;
-use crate::chrome::{Browser, BrowserVersion, LaunchSpec, force_kill_group, launch, teardown};
+use crate::chrome::{
+    Browser, BrowserVersion, LaunchError, LaunchSpec, force_kill_group, launch, teardown,
+};
 use crate::config::RuntimeConfig;
 #[cfg(target_os = "linux")]
 use crate::linux::tiers::MemCapTier;
@@ -13,6 +15,8 @@ use crate::rss::{tree_rss_bytes, tree_thread_count};
 use crate::session_dirs::SessionDirs;
 use crate::template;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -65,6 +69,9 @@ struct FactoryInner {
     footprint: Mutex<Option<SessionFootprint>>,
     #[cfg(target_os = "linux")]
     cgroup_base: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    leaf_seq: AtomicU64,
+    leaf_enter_blocked: AtomicBool,
 }
 
 /// Launches and destroys [`ChromeSession`]s with the host's best isolation
@@ -111,6 +118,9 @@ impl ChromeFactory {
                 footprint: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 cgroup_base,
+                #[cfg(target_os = "linux")]
+                leaf_seq: AtomicU64::new(0),
+                leaf_enter_blocked: AtomicBool::new(false),
             }),
         }
     }
@@ -168,7 +178,7 @@ impl ChromeFactory {
                 return;
             }
         };
-        let browser = match self.launch_browser(&scratch.user_data_dir).await {
+        let browser = match self.launch_browser(&scratch.user_data_dir, None).await {
             Ok(browser) => browser,
             Err(e) => {
                 tracing::warn!(error = %e, "template: warm launch failed; sessions use empty dirs");
@@ -218,8 +228,13 @@ impl ChromeFactory {
         let _ = scratch.teardown().await;
     }
 
-    fn launch_spec<'a>(&'a self, user_data_dir: &'a std::path::Path) -> LaunchSpec<'a> {
+    fn launch_spec<'a>(
+        &'a self,
+        user_data_dir: &'a std::path::Path,
+        cgroup_leaf: Option<&'a std::path::Path>,
+    ) -> LaunchSpec<'a> {
         LaunchSpec {
+            cgroup_leaf,
             executable: &self.inner.executable,
             user_data_dir,
             no_sandbox: self.inner.sandbox_disabled.load(Ordering::Relaxed),
@@ -240,9 +255,10 @@ impl ChromeFactory {
     async fn launch_browser(
         &self,
         user_data_dir: &std::path::Path,
+        cgroup_leaf: Option<&std::path::Path>,
     ) -> Result<Browser, crate::chrome::LaunchError> {
         let sandboxed = !self.inner.sandbox_disabled.load(Ordering::Relaxed);
-        match launch(&self.launch_spec(user_data_dir)).await {
+        match launch(&self.launch_spec(user_data_dir, cgroup_leaf)).await {
             Ok(browser) => Ok(browser),
             Err(e) if sandboxed && e.is_sandbox_failure() => {
                 let first = !self.inner.sandbox_blocked.swap(true, Ordering::SeqCst);
@@ -262,7 +278,7 @@ impl ChromeFactory {
                         "Chromium's sandbox is blocked on this host; falling back to --no-sandbox (safe for trusted content, isolation is unaffected)"
                     );
                 }
-                launch(&self.launch_spec(user_data_dir)).await
+                launch(&self.launch_spec(user_data_dir, cgroup_leaf)).await
             }
             Err(e) => Err(e),
         }
@@ -385,9 +401,27 @@ impl ChromeFactory {
     }
 
     async fn launch_session(&self, dirs: SessionDirs) -> Result<ChromeSession, String> {
-        let browser = match self.launch_browser(&dirs.user_data_dir).await {
+        let mut cgroup = self.prepare_leaf();
+        let mut launched = self
+            .launch_browser(&dirs.user_data_dir, leaf_dir(cgroup.as_ref()))
+            .await;
+        if cgroup.is_some()
+            && launched
+                .as_ref()
+                .is_err_and(LaunchError::is_cgroup_enter_failure)
+        {
+            if !self.inner.leaf_enter_blocked.swap(true, Ordering::SeqCst) {
+                tracing::warn!(
+                    "cgroup: the browser could not join its session leaf; serving with the rss soft cap instead of hard limits"
+                );
+            }
+            self.destroy_cgroup(cgroup.take()).await;
+            launched = self.launch_browser(&dirs.user_data_dir, None).await;
+        }
+        let browser = match launched {
             Ok(browser) => browser,
             Err(e) => {
+                self.destroy_cgroup(cgroup.take()).await;
                 let _ = dirs.teardown().await;
                 let mut message = e.to_string();
                 if let Some(hint) = e.remediation() {
@@ -398,7 +432,6 @@ impl ChromeFactory {
             }
         };
         self.note_version(&browser.version);
-        let cgroup = self.apply_cgroup(browser.pid);
         let monitor = self.spawn_soft_cap(cgroup.is_some(), browser.pid);
         Ok(ChromeSession {
             browser,
@@ -452,21 +485,18 @@ impl ChromeFactory {
         captured
     }
 
+    /// Creates the leaf a browser will be born in, with its limits already
+    /// written. `None` when the cgroup tier is inactive or a previous launch
+    /// proved the leaf cannot be joined.
     #[cfg(target_os = "linux")]
-    fn apply_cgroup(&self, pid: i32) -> Option<SessionCgroup> {
-        let base = self.inner.cgroup_base.as_ref()?;
-        let name = format!("session-{pid}");
-        let leaf = crate::linux::cgroup::Cgroup::create(base, &name).ok()?;
-        // The migration is the operation a mis-delegated host can deny (EACCES).
-        // If it fails the leaf is inert (the browser is not in it), so drop it and
-        // report no cgroup, which starts the RSS soft cap instead of leaving the
-        // session uncapped. The startup probe normally prevents reaching here, but
-        // a per-session failure must not silently fall through to no cap at all.
-        if let Err(e) = leaf.attach(pid) {
-            tracing::warn!(error = %e, "cgroup: attach failed; falling back to rss soft-cap");
-            let _ = std::fs::remove_dir(leaf.dir());
+    fn prepare_leaf(&self) -> Option<SessionCgroup> {
+        if self.inner.leaf_enter_blocked.load(Ordering::Relaxed) {
             return None;
         }
+        let base = self.inner.cgroup_base.as_ref()?;
+        let seq = self.inner.leaf_seq.fetch_add(1, Ordering::Relaxed);
+        let name = format!("session-{}-{seq}", std::process::id());
+        let leaf = crate::linux::cgroup::Cgroup::create(base, &name).ok()?;
         if self.inner.memory_max_bytes > 0
             && let Err(e) = leaf.set_memory_max(self.inner.memory_max_bytes)
         {
@@ -477,7 +507,7 @@ impl ChromeFactory {
 
     #[cfg(not(target_os = "linux"))]
     #[allow(clippy::unused_self)]
-    fn apply_cgroup(&self, _pid: i32) -> Option<SessionCgroup> {
+    fn prepare_leaf(&self) -> Option<SessionCgroup> {
         None
     }
 
@@ -517,6 +547,16 @@ impl ChromeFactory {
         });
         Some(handle.abort_handle())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn leaf_dir(cgroup: Option<&SessionCgroup>) -> Option<&std::path::Path> {
+    cgroup.map(SessionCgroup::dir)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn leaf_dir(_cgroup: Option<&SessionCgroup>) -> Option<&std::path::Path> {
+    None
 }
 
 #[cfg(target_os = "linux")]

@@ -21,6 +21,11 @@ const READY_PROBE_ID: u64 = 1;
 const STDERR_MAX_LINE_BYTES: usize = 8 * 1024;
 const STDERR_MAX_LINES: usize = 200;
 const ABORT_REAP_BUDGET: Duration = Duration::from_secs(5);
+pub(crate) const ENTER_SHELL: &str = "/bin/sh";
+// cgroup membership is inherited at fork, so the process must join its leaf
+// before the browser image starts and forks its zygote, GPU and renderers.
+pub(crate) const ENTER_LEAF_THEN_EXEC: &str = r#"echo $$ > "$0/cgroup.procs" && exec "$@""#;
+const ENTER_LEAF_FAILURE_MARKER: &str = "cgroup.procs";
 
 /// Errors from launching a browser.
 #[derive(Debug, Error)]
@@ -102,6 +107,15 @@ impl LaunchError {
             .iter()
             .any(|sig| stderr_tail.contains(sig))
     }
+
+    /// Whether the launch died because the process could not join its cgroup
+    /// leaf (the shell reports the refused `cgroup.procs` write and exits
+    /// before the browser image is executed).
+    #[must_use]
+    pub fn is_cgroup_enter_failure(&self) -> bool {
+        matches!(self, Self::ChromeExited { stderr_tail, .. }
+            if stderr_tail.contains(ENTER_LEAF_FAILURE_MARKER))
+    }
 }
 
 /// Chromium stderr fragments that mean its OS sandbox could not initialize.
@@ -179,6 +193,10 @@ pub struct LaunchSpec<'a> {
     pub launch_timeout: Duration,
     /// Cap on a single CDP message.
     pub max_frame_bytes: usize,
+    /// cgroup v2 leaf the browser must be born in. When set, the process joins
+    /// the leaf and only then executes the browser, so every process the
+    /// browser forks is covered by the leaf's limits.
+    pub cgroup_leaf: Option<&'a Path>,
 }
 
 /// A launched, CDP-ready browser process.
@@ -210,6 +228,27 @@ impl Browser {
     }
 }
 
+/// The command that starts `executable`, born inside `cgroup_leaf` when given.
+///
+/// With a leaf, the spawned process first writes its own pid into the leaf's
+/// `cgroup.procs` and then replaces itself with `executable`, keeping the same
+/// pid. If the leaf refuses the write, the process exits without running
+/// `executable`.
+pub(crate) fn browser_command(executable: &Path, cgroup_leaf: Option<&Path>) -> Command {
+    match cgroup_leaf {
+        Some(leaf) => {
+            let mut wrapped = Command::new(ENTER_SHELL);
+            wrapped
+                .arg("-c")
+                .arg(ENTER_LEAF_THEN_EXEC)
+                .arg(leaf)
+                .arg(executable);
+            wrapped
+        }
+        None => Command::new(executable),
+    }
+}
+
 /// Launches a browser and waits until it answers CDP over the pipe.
 ///
 /// On any failure the spawned process group is killed and the direct child
@@ -231,7 +270,7 @@ pub async fn launch(spec: &LaunchSpec<'_>) -> Result<Browser, LaunchError> {
         disable_dev_shm: spec.disable_dev_shm,
         extra: spec.extra_flags,
     });
-    let mut command = Command::new(spec.executable);
+    let mut command = browser_command(spec.executable, spec.cgroup_leaf);
     command
         .args(&args)
         .stdin(Stdio::null())
@@ -474,5 +513,57 @@ mod tests {
         let lines = tail.snapshot();
         assert_eq!(lines.len(), STDERR_MAX_LINES);
         assert_eq!(lines.first().map(String::as_str), Some("line 50"));
+    }
+}
+
+#[cfg(test)]
+mod enter_leaf_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn joins_the_leaf_before_running_the_program() {
+        let leaf = tempfile::tempdir().unwrap();
+        let mut command = browser_command(Path::new("/bin/sh"), Some(leaf.path()));
+        command.arg("-c").arg("exit 0");
+        let child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let status = child.wait_with_output().await.unwrap().status;
+        assert!(status.success());
+        let recorded = std::fs::read_to_string(leaf.path().join("cgroup.procs")).unwrap();
+        assert_eq!(
+            recorded.trim(),
+            pid.to_string(),
+            "the program must keep the joining pid"
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_leaf_stops_the_program_and_names_the_file() {
+        let missing = Path::new("/nonexistent-browserserve-leaf");
+        let marker = tempfile::tempdir().unwrap();
+        let touched = marker.path().join("ran");
+        let mut command = browser_command(Path::new("/bin/sh"), Some(missing));
+        command
+            .arg("-c")
+            .arg(format!("touch {}", touched.display()))
+            .stderr(Stdio::piped());
+        let output = command.spawn().unwrap().wait_with_output().await.unwrap();
+        assert!(!output.status.success());
+        assert!(
+            !touched.exists(),
+            "the program must not run outside its leaf"
+        );
+        let error = LaunchError::ChromeExited {
+            status: String::from("exit 1"),
+            stderr_tail: String::from_utf8_lossy(&output.stderr).into_owned(),
+        };
+        assert!(error.is_cgroup_enter_failure());
+    }
+
+    #[tokio::test]
+    async fn without_a_leaf_the_program_runs_directly() {
+        let mut command = browser_command(Path::new("/bin/sh"), None);
+        command.arg("-c").arg("exit 0");
+        assert!(command.spawn().unwrap().wait().await.unwrap().success());
     }
 }

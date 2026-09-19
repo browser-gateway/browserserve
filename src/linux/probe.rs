@@ -91,24 +91,23 @@ fn probe_cgroup(notes: &mut Vec<String>) -> (MemCapTier, KillTier) {
 }
 
 /// Confirms the delegated subtree actually permits migrating a process into a
-/// leaf. Spawns a throwaway child, moves it in, and reports whether the move
-/// succeeded. Conservative on any error: a host we cannot verify is treated as
+/// leaf. Runs a throwaway child that joins the leaf and exits, and reports
+/// whether it could. Conservative on any error: a host we cannot verify is treated as
 /// unable to migrate, so we fall back to the RSS soft cap rather than claim a
 /// hard cap we cannot apply.
 fn probe_attach(leaf: &cgroup::Cgroup) -> bool {
-    let Ok(mut child) = std::process::Command::new("sleep")
-        .arg("3600")
+    // Same join-then-exec path a browser launch uses, so the tier is proven
+    // with the real mechanism (including the presence of the shell).
+    std::process::Command::new(crate::chrome::launch::ENTER_SHELL)
+        .arg("-c")
+        .arg(crate::chrome::launch::ENTER_LEAF_THEN_EXEC)
+        .arg(leaf.dir())
+        .arg("true")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-    let migrated = i32::try_from(child.id()).is_ok_and(|pid| leaf.attach(pid).is_ok());
-    let _ = child.kill();
-    let _ = child.wait();
-    migrated
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn probe_profile(data_dir: &Path, notes: &mut Vec<String>) -> ProfileTier {
