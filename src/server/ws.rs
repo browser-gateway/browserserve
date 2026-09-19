@@ -20,6 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
 fn reject(status: StatusCode, reason: &str, detail: &str) -> Response {
+    tracing::info!(status = status.as_u16(), reason, detail, "session refused");
     (
         status,
         axum::Json(json!({ "error": reason, "detail": detail })),
