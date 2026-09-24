@@ -9,6 +9,7 @@ use crate::profile::cdp::{
 };
 use crate::profile::payload::ProfilePayload;
 use crate::server::http::QueryMap;
+use crate::server::single_use::SpentGuard;
 use crate::server::{AppState, http};
 use axum::extract::ws::WebSocket;
 use axum::extract::{Query, State, WebSocketUpgrade};
@@ -40,6 +41,22 @@ fn claim_status(e: &ClaimError) -> (StatusCode, &'static str) {
         ClaimError::Launch { .. } => "launch_failed",
     };
     (StatusCode::SERVICE_UNAVAILABLE, reason)
+}
+
+/// Single-use: takes the one use BEFORE any browser is handed out, so two racing
+/// requests can never both be served. Any later rejection drops the guard, which
+/// still shuts the spent process down.
+fn take_single_use(state: &AppState) -> Result<Option<SpentGuard>, Box<Response>> {
+    let Some(single_use) = &state.single_use else {
+        return Ok(None);
+    };
+    single_use.try_spend().map(Some).ok_or_else(|| {
+        Box::new(reject(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "single_use_spent",
+            "this instance serves one session only; connect again for a fresh one",
+        ))
+    })
 }
 
 /// `WS /`: one connection, one isolated browser.
@@ -77,6 +94,11 @@ pub async fn ws_handler(
         );
     }
 
+    let spent_guard = match take_single_use(&state) {
+        Ok(guard) => guard,
+        Err(refused) => return *refused,
+    };
+
     // Profile session: claim the dropped-off profile, launch a fresh browser
     // with its native layer already on disk, inject the portable core, serve,
     // then capture back. Bypasses the warm pool (a warm browser is already
@@ -104,9 +126,10 @@ pub async fn ws_handler(
         let max = state.max_message_bytes;
         let state = Arc::clone(&state);
         return ws.max_message_size(max).on_upgrade(move |socket| {
-            tracker.track_future(profile_session(
-                state, socket, session, payload, token, cancel, read_only,
-            ))
+            tracker.track_future(async move {
+                profile_session(state, socket, session, payload, token, cancel, read_only).await;
+                drop(spent_guard);
+            })
         });
     }
 
@@ -140,6 +163,7 @@ pub async fn ws_handler(
                     () = cancel.cancelled() => {}
                 }
                 pool.destroy(claimed).await;
+                drop(spent_guard);
             })
         })
 }

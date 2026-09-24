@@ -4,6 +4,14 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `session.singleUse` / `BROWSERSERVE_SINGLE_USE`: serve exactly one browser session, then shut down and exit 0. The one use is taken atomically before any browser is handed out, so every later or concurrent connection is refused with `503 single_use_spent`. A spent instance exits even when its session never started (failed launch, unknown profile token, aborted upgrade). Auth failures and pressure refusals do not spend it. `GET /ready` reports `spent`. Forces `pool.maxSessions: 1` and disables boot calibration. For orchestrators that replace exited instances, so two clients never share a process or machine.
+
+### Fixed
+- README no longer lists `session.maxSessionMs`, which was removed and is rejected at startup. `browserserve.example.yml` now shows `cpuPercent` and `pidsMax`.
+
 ## [0.1.11] - 2026-09-19
 
 ### Fixed

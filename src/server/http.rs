@@ -43,7 +43,12 @@ pub async fn live() -> &'static str {
 pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
     let pool_stats = state.pool.stats();
     let calibrating = state.calibrating.load(std::sync::atomic::Ordering::Relaxed);
+    let spent = state
+        .single_use
+        .as_ref()
+        .is_some_and(crate::server::single_use::SingleUse::is_spent);
     let ready = !calibrating
+        && !spent
         && !state.factory.sandbox_required_but_unavailable()
         && pool_stats.accepting
         && (pool_stats.warm > 0 || pool_stats.running < pool_stats.max_sessions);
@@ -51,6 +56,7 @@ pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
         "ready": ready,
         "warm": pool_stats.warm,
         "calibrating": calibrating,
+        "spent": spent,
         "sandbox": state.factory.sandbox_state(),
     }));
     if ready {

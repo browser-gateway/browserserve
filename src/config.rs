@@ -90,6 +90,11 @@ pub struct SessionConfig {
     pub tmpfs_size_mb: u64,
     /// Grace period between SIGTERM and SIGKILL during teardown, in milliseconds.
     pub kill_grace_ms: u64,
+    /// Serve exactly one browser session, then shut down and exit. Every later
+    /// connection is refused. Implies `pool.maxSessions: 1` and no boot
+    /// calibration. For orchestrators that replace exited instances, so no two
+    /// clients ever share a process or machine.
+    pub single_use: bool,
 }
 
 impl Default for SessionConfig {
@@ -101,6 +106,7 @@ impl Default for SessionConfig {
             pids_max: 0,
             tmpfs_size_mb: 512,
             kill_grace_ms: 5_000,
+            single_use: false,
         }
     }
 }
@@ -238,7 +244,7 @@ fn is_truthy(value: &str) -> bool {
 /// `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`,
 /// `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`,
 /// `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`,
-/// `BROWSERSERVE_CALIBRATE`. Returns a
+/// `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_SINGLE_USE`. Returns a
 /// validated [`Loaded`].
 ///
 /// # Errors
@@ -260,12 +266,6 @@ pub fn load<S: std::hash::BuildHasher>(
     }
     if let Some(dir) = env.get("BROWSERSERVE_DATA_DIR") {
         config.data_dir = PathBuf::from(dir);
-    }
-    if let Some(value) = env.get("BROWSERSERVE_REQUIRE_SANDBOX") {
-        config.chrome.require_sandbox = is_truthy(value);
-    }
-    if let Some(value) = env.get("BROWSERSERVE_CALIBRATE") {
-        config.pool.calibrate = is_truthy(value);
     }
     if let Some(value) = env.get("BROWSERSERVE_MIN_READY") {
         config.pool.min_ready = value.trim().parse().map_err(|_| {
@@ -329,9 +329,8 @@ pub fn load<S: std::hash::BuildHasher>(
             ))
         })?;
     }
-    if let Some(value) = env.get("BROWSERSERVE_NO_SANDBOX") {
-        config.chrome.no_sandbox = is_truthy(value);
-    }
+
+    apply_switches(&mut config, env);
 
     let port = match env.get("PORT") {
         Some(value) => value.parse::<u16>().map_err(|_| ConfigError::BadPort {
@@ -380,6 +379,29 @@ pub fn load_from_env<S: std::hash::BuildHasher>(
         None => None,
     };
     load(yaml.as_deref(), env)
+}
+
+/// Applies the on/off environment switches, then the settings single-use implies.
+fn apply_switches<S: std::hash::BuildHasher>(
+    config: &mut RuntimeConfig,
+    env: &HashMap<String, String, S>,
+) {
+    if let Some(value) = env.get("BROWSERSERVE_REQUIRE_SANDBOX") {
+        config.chrome.require_sandbox = is_truthy(value);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_NO_SANDBOX") {
+        config.chrome.no_sandbox = is_truthy(value);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_CALIBRATE") {
+        config.pool.calibrate = is_truthy(value);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_SINGLE_USE") {
+        config.session.single_use = is_truthy(value);
+    }
+    if config.session.single_use {
+        config.pool.max_sessions = Some(1);
+        config.pool.calibrate = false;
+    }
 }
 
 fn validate(config: &RuntimeConfig) -> Result<(), ConfigError> {
@@ -560,6 +582,41 @@ dataDir: /var/lib/bgr
     fn memory_max_mb_default_is_disabled() {
         let loaded = load(None, &HashMap::new()).unwrap();
         assert_eq!(loaded.config.session.memory_max_mb, 0);
+    }
+
+    #[test]
+    fn single_use_is_off_by_default_and_leaves_the_pool_alone() {
+        let loaded = load(None, &HashMap::new()).unwrap();
+        assert!(!loaded.config.session.single_use);
+        assert_eq!(loaded.config.pool.max_sessions, None);
+        assert!(loaded.config.pool.calibrate);
+    }
+
+    #[test]
+    fn single_use_forces_one_session_and_no_calibration() {
+        let loaded = load(
+            Some("pool:\n  maxSessions: 8\nsession:\n  singleUse: true\n"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(loaded.config.session.single_use);
+        assert_eq!(loaded.config.pool.max_sessions, Some(1));
+        assert!(!loaded.config.pool.calibrate);
+    }
+
+    #[test]
+    fn single_use_env_overrides_yaml_both_ways() {
+        let on = load(None, &env(&[("BROWSERSERVE_SINGLE_USE", "1")])).unwrap();
+        assert!(on.config.session.single_use);
+        assert_eq!(on.config.pool.max_sessions, Some(1));
+
+        let off = load(
+            Some("session:\n  singleUse: true\n"),
+            &env(&[("BROWSERSERVE_SINGLE_USE", "false")]),
+        )
+        .unwrap();
+        assert!(!off.config.session.single_use);
+        assert_eq!(off.config.pool.max_sessions, None);
     }
 
     #[test]

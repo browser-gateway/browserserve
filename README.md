@@ -171,7 +171,7 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 | `session.memoryMaxMb` | `0` | Per-session memory cap (kernel-enforced on a delegated host, RSS soft-cap otherwise; `0` = uncapped). |
 | `session.cpuPercent` | `0` | Per-session CPU cap as a percentage of one core (`100` = one core, `150` = one and a half). Kernel-enforced on a delegated host only; `0` = uncapped. |
 | `session.pidsMax` | `0` | Per-session cap on processes plus threads. Kernel-enforced on a delegated host only; `0` = uncapped. |
-| `session.maxSessionMs` | `0` | Maximum session lifetime; `0` = unlimited. |
+| `session.singleUse` | `false` | Serve exactly one session, then exit. Every later connection gets `503 single_use_spent`. Forces `maxSessions: 1` and skips calibration. Meant for orchestrators that replace exited instances (Cloud Run, Kubernetes, Fly Machines), so no two clients ever share a process or machine. Env: `BROWSERSERVE_SINGLE_USE`. |
 | `session.killGraceMs` | `5000` | SIGTERM-to-SIGKILL grace during teardown. |
 | `pressure.maxCpuPercent` | `95` | Reject new sessions above this host CPU usage. |
 | `pressure.maxMemoryPercent` | `95` | Reject new sessions above this host memory usage. |

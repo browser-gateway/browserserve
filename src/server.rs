@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod http;
 pub mod profiles;
+pub mod single_use;
 pub mod ws;
 
 use crate::config::{Loaded, PressureConfig, RuntimeConfig};
@@ -17,7 +18,7 @@ use axum::routing::{any, get, post};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tokio_util::task::TaskTracker;
 use tower_http::timeout::TimeoutLayer;
 
@@ -59,6 +60,8 @@ pub struct AppState {
     /// answers health/discovery, but refuses sessions and reports not-ready so
     /// calibration has the host to itself. Cleared once the ceiling is set.
     pub calibrating: Arc<AtomicBool>,
+    /// Present in single-use mode: this process serves one session, then exits.
+    pub single_use: Option<single_use::SingleUse>,
 }
 
 /// Builds the router: probe routes carry an HTTP timeout; the WS route does
@@ -151,6 +154,7 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
         idle_timeout: (config.session.idle_timeout_ms > 0)
             .then(|| Duration::from_millis(config.session.idle_timeout_ms)),
         calibrating: calibrating.clone(),
+        single_use: config.session.single_use.then(single_use::SingleUse::new),
     });
 
     let bind = format!("{}:{}", loaded.serve.host, loaded.serve.port);
@@ -177,10 +181,13 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
     }
 
     let shutdown_pool = pool.clone();
+    let single_use_finished = state
+        .single_use
+        .as_ref()
+        .map(single_use::SingleUse::finished);
     axum::serve(listener, router(Arc::clone(&state)))
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            tracing::info!("shutdown signal received; refusing new sessions");
+            wait_for_shutdown(single_use_finished).await;
             shutdown_pool.close();
         })
         .await
@@ -246,6 +253,24 @@ pub(crate) fn spawn_calibration(
             "capacity calibration set the ceiling; now accepting sessions"
         );
     });
+}
+
+/// Resolves on SIGTERM/ctrl-c, or, in single-use mode, when the one session ends.
+async fn wait_for_shutdown(single_use_finished: Option<WaitForCancellationFutureOwned>) {
+    let Some(finished) = single_use_finished else {
+        shutdown_signal().await;
+        tracing::info!("shutdown signal received; refusing new sessions");
+        return;
+    };
+    tracing::info!("single-use mode: this process serves one session, then exits");
+    tokio::select! {
+        () = shutdown_signal() => {
+            tracing::info!("shutdown signal received; refusing new sessions");
+        }
+        () = finished => {
+            tracing::info!("single-use session finished; shutting down");
+        }
+    }
 }
 
 async fn shutdown_signal() {
