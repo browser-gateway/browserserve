@@ -12,6 +12,91 @@ RUNTIME_UID=999
 RUNTIME_GID=999
 CG=/sys/fs/cgroup
 
+METADATA_V4="169.254.0.0/16 100.100.100.200/32"
+METADATA_V6="fd00:ec2::254/128 fd20:ce::254/128"
+
+block_fail() {
+  echo "entrypoint: BROWSERSERVE_BLOCK_METADATA=1 but $1; refusing to start. Run as root with the NET_ADMIN capability (docker run --cap-add NET_ADMIN), or unset BROWSERSERVE_BLOCK_METADATA." >&2
+  exit 1
+}
+
+in_blocked_v4() {
+  case "$1" in
+    169.254.*|100.100.100.200) return 0 ;;
+  esac
+  return 1
+}
+
+in_blocked_v6() {
+  case "$1" in
+    fd00:ec2::254|fd20:ce::254|::ffff:169.254.*) return 0 ;;
+  esac
+  return 1
+}
+
+# Blocks connections this container starts: TCP SYNs and all UDP. Replies to
+# inbound traffic stay allowed, because the platform's own health checks can
+# arrive from link-local addresses. REJECT fails fast; some kernels (Cloud Run's,
+# for IPv6) lack the REJECT target, so DROP is the fallback. The rule must be
+# confirmed active either way.
+add_block_rule() {
+  for proto in "tcp --syn" "udp"; do
+    added=0
+    for target in REJECT DROP; do
+      # shellcheck disable=SC2086
+      if "$1" -C OUTPUT -p $proto -d "$2" -j "$target" 2>/dev/null \
+        || { "$1" -I OUTPUT -p $proto -d "$2" -j "$target" 2>/dev/null \
+             && "$1" -C OUTPUT -p $proto -d "$2" -j "$target" 2>/dev/null; }; then
+        added=1
+        break
+      fi
+    done
+    [ "$added" = "1" ] || block_fail "$1 could not add a $proto rule for $2"
+  done
+}
+
+# Refuses every connection this container starts to cloud instance metadata
+# addresses. Must run as root before any browser starts.
+block_metadata() {
+  [ "$(id -u)" = "0" ] || block_fail "the entrypoint is not running as root"
+  command -v iptables >/dev/null 2>&1 || block_fail "iptables is not installed"
+  for net in $METADATA_V4; do
+    add_block_rule iptables "$net"
+  done
+  if [ -e /proc/net/if_inet6 ]; then
+    command -v ip6tables >/dev/null 2>&1 || block_fail "ip6tables is not installed"
+    for net in $METADATA_V6; do
+      add_block_rule ip6tables "$net"
+    done
+  else
+    echo "entrypoint: kernel has no IPv6; IPv6 metadata rules not needed" >&2
+  fi
+  if curl -s -o /dev/null -m 2 http://169.254.169.254/ 2>/dev/null; then
+    block_fail "169.254.169.254 is still reachable after adding the rules"
+  fi
+  # The metadata address doubles as the DNS resolver on some clouds; once it is
+  # blocked, name resolution must go to resolvers the browser may reach. Docker's
+  # embedded resolver (127.0.0.11) forwards from inside this container, so its
+  # upstreams, listed on the "# ExtServers: [...]" line, count too.
+  needs_dns=0
+  for server in $(sed -n -e 's/^nameserver[[:space:]]\{1,\}//p' \
+      -e 's/^# ExtServers: \[\(.*\)\]$/\1/p' /etc/resolv.conf | tr ',' ' '); do
+    server="${server#host(}"; server="${server%)}"
+    if in_blocked_v4 "$server" || in_blocked_v6 "$server"; then needs_dns=1; fi
+  done
+  if [ "$needs_dns" = "1" ]; then
+    resolvers="${BROWSERSERVE_DNS:-1.1.1.1 8.8.8.8}"
+    { for r in $resolvers; do echo "nameserver $r"; done; } > /etc/resolv.conf \
+      || block_fail "/etc/resolv.conf points at a blocked address and could not be rewritten"
+    echo "entrypoint: /etc/resolv.conf pointed at a blocked address; now using $resolvers" >&2
+  fi
+  echo "entrypoint: cloud metadata addresses blocked for this container" >&2
+}
+
+if [ "${BROWSERSERVE_BLOCK_METADATA:-0}" = "1" ]; then
+  block_metadata
+fi
+
 try_delegate() {
   [ "$(id -u)" = "0" ] || return 1
   [ -w "$CG/cgroup.subtree_control" ] || return 1

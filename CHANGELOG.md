@@ -4,6 +4,12 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Docker image: `BROWSERSERVE_BLOCK_METADATA=1` blocks every connection the container starts to cloud instance metadata addresses (`169.254.0.0/16`, `100.100.100.200`, `fd00:ec2::254`, `fd20:ce::254`) before the browser runs, so a page cannot read the machine's credentials. TCP connection attempts and UDP are refused; replies to inbound traffic are untouched, so platform health checks from link-local addresses keep working. Fails closed: without `NET_ADMIN`, or if a rule cannot be confirmed, the container exits with a message naming the fix. Rewrites `/etc/resolv.conf` to `BROWSERSERVE_DNS` (default `1.1.1.1 8.8.8.8`) when the resolver, or Docker's embedded resolver upstream, is a blocked address. Off by default.
+- The image now includes `iptables`.
+
 ## [0.1.12] - 2026-09-24
 
 ### Added

@@ -154,6 +154,7 @@ For untrusted content, require the sandbox and refuse the fallback with `chrome.
 
 - **Sandbox, on by default, with a safe fallback.** The sandbox stays on where the host allows it and falls back to `--no-sandbox` where the host blocks it; isolation between sessions does not depend on the sandbox. Set `chrome.requireSandbox: true` to refuse the fallback and fail closed instead (see [Sandbox](#sandbox)).
 - **Non-root.** The server does all real work as an unprivileged user (uid 999). It starts as root only to self-delegate a per-session cgroup slice when the host allows it, then drops privileges.
+- **Cloud metadata block (Docker image, opt-in).** On a cloud machine, a page the browser loads can try to reach the instance metadata server (`169.254.169.254` and friends) and read the machine's credentials. Set `BROWSERSERVE_BLOCK_METADATA=1` and the entrypoint, while still root, refuses every connection the container starts to link-local addresses (`169.254.0.0/16`), Alibaba's `100.100.100.200`, and the AWS and Google IPv6 metadata addresses, then drops privileges; the unprivileged runtime cannot undo it. Needs the `NET_ADMIN` capability (`docker run --cap-add NET_ADMIN`; Cloud Run second generation already grants it). The container refuses to start if the block cannot be applied. When the resolver is a metadata address (as on Google Cloud), DNS switches to `BROWSERSERVE_DNS` (default `1.1.1.1 8.8.8.8`); container-name lookups on a Docker network stop working in that case.
 - **Authenticated surface.** When `BROWSERSERVE_TOKEN` is set, the CDP WebSocket and the `/v1/profile*` endpoints require the token; `/live`, `/ready`, and `/pressure` stay open for load balancers.
 
 See [SECURITY.md](SECURITY.md) for the reporting policy and deployment notes.
@@ -182,7 +183,7 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 
 See [`browserserve.example.yml`](browserserve.example.yml) for every key with inline notes. Unknown keys are rejected, so a typo in the config fails fast at startup.
 
-Environment: `PORT` (default 9222), `HOST` (default `0.0.0.0`), `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_CHROME_PATH`, `BROWSERSERVE_DATA_DIR`.
+Environment: `PORT` (default 9222), `HOST` (default `0.0.0.0`), `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_CHROME_PATH`, `BROWSERSERVE_DATA_DIR`. Docker image only: `BROWSERSERVE_BLOCK_METADATA`, `BROWSERSERVE_DNS` (see [Security](#security)).
 
 ## CLI
 

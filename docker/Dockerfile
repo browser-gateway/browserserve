@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     dumb-init \
+    iptables \
     unzip \
     libasound2t64 \
     libatk-bridge2.0-0t64 \
@@ -77,7 +78,8 @@ ENV BROWSERSERVE_CHROME_PATH=/opt/chrome/chrome \
     PORT=9222 \
     HOST=0.0.0.0
 
-# Starts as root ONLY to self-delegate a cgroup slice, then the entrypoint drops
+# Starts as root ONLY to self-delegate a cgroup slice (and, when
+# BROWSERSERVE_BLOCK_METADATA=1, to block cloud metadata addresses), then the entrypoint drops
 # to uid 999 for all real work (Chrome sandbox requires non-root). On hosts
 # without a delegated cgroup, it is a plain non-root passthrough.
 WORKDIR /home/runtime
