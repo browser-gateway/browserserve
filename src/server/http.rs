@@ -66,24 +66,82 @@ pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// Instance-level states that refuse every new session, in precedence order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Gate {
+    #[default]
+    Open,
+    SandboxBlocked,
+    Spent,
+    Draining,
+    Calibrating,
+}
+
+/// Everything that decides whether `/pressure` reports the instance available.
+#[derive(Debug, Clone, Copy, Default)]
+struct PressureInputs {
+    gate: Gate,
+    running: usize,
+    max_sessions: usize,
+    queued: usize,
+    max_queue: usize,
+    cpu: f64,
+    memory: f64,
+    max_cpu: f64,
+    max_memory: f64,
+}
+
+/// The reason a new session would be refused right now, or `""` when it would
+/// be accepted.
+fn unavailable_reason(inputs: PressureInputs) -> &'static str {
+    match inputs.gate {
+        Gate::SandboxBlocked => "sandbox",
+        Gate::Spent => "spent",
+        Gate::Draining => "draining",
+        Gate::Calibrating => "calibrating",
+        Gate::Open
+            if inputs.running >= inputs.max_sessions && inputs.queued >= inputs.max_queue =>
+        {
+            "full"
+        }
+        Gate::Open if inputs.cpu > inputs.max_cpu => "cpu",
+        Gate::Open if inputs.memory > inputs.max_memory => "memory",
+        Gate::Open => "",
+    }
+}
+
+fn gate(state: &AppState, accepting: bool) -> Gate {
+    if state.factory.sandbox_required_but_unavailable() {
+        Gate::SandboxBlocked
+    } else if state
+        .single_use
+        .as_ref()
+        .is_some_and(crate::server::single_use::SingleUse::is_spent)
+    {
+        Gate::Spent
+    } else if !accepting {
+        Gate::Draining
+    } else if state.calibrating.load(std::sync::atomic::Ordering::Relaxed) {
+        Gate::Calibrating
+    } else {
+        Gate::Open
+    }
+}
+
 fn pressure_reason(state: &AppState) -> (&'static str, f64, f64) {
     let (cpu, memory) = state.gauge.snapshot();
     let pool_stats = state.pool.stats();
-    let reason = if state.factory.sandbox_required_but_unavailable() {
-        "sandbox"
-    } else if !pool_stats.accepting {
-        "draining"
-    } else if pool_stats.running >= pool_stats.max_sessions
-        && pool_stats.queued >= pool_stats.max_queue
-    {
-        "full"
-    } else if cpu > state.pressure.max_cpu_percent {
-        "cpu"
-    } else if memory > state.pressure.max_memory_percent {
-        "memory"
-    } else {
-        ""
-    };
+    let reason = unavailable_reason(PressureInputs {
+        gate: gate(state, pool_stats.accepting),
+        running: pool_stats.running,
+        max_sessions: pool_stats.max_sessions,
+        queued: pool_stats.queued,
+        max_queue: pool_stats.max_queue,
+        cpu,
+        memory,
+        max_cpu: state.pressure.max_cpu_percent,
+        max_memory: state.pressure.max_memory_percent,
+    });
     (reason, cpu, memory)
 }
 
@@ -207,5 +265,95 @@ pub async fn profile_pick_up(
             axum::Json(json!({ "error": "no captured profile for token" })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Gate, PressureInputs, unavailable_reason};
+
+    fn healthy() -> PressureInputs {
+        PressureInputs {
+            max_sessions: 4,
+            max_queue: 10,
+            max_cpu: 95.0,
+            max_memory: 95.0,
+            ..PressureInputs::default()
+        }
+    }
+
+    fn with_gate(gate: Gate) -> PressureInputs {
+        PressureInputs { gate, ..healthy() }
+    }
+
+    #[test]
+    fn healthy_instance_is_available() {
+        assert_eq!(unavailable_reason(healthy()), "");
+    }
+
+    #[test]
+    fn calibration_makes_it_unavailable() {
+        assert_eq!(
+            unavailable_reason(with_gate(Gate::Calibrating)),
+            "calibrating"
+        );
+    }
+
+    #[test]
+    fn a_spent_single_use_instance_is_unavailable() {
+        assert_eq!(unavailable_reason(with_gate(Gate::Spent)), "spent");
+    }
+
+    #[test]
+    fn each_other_reason_is_reported() {
+        assert_eq!(
+            unavailable_reason(with_gate(Gate::SandboxBlocked)),
+            "sandbox"
+        );
+        assert_eq!(unavailable_reason(with_gate(Gate::Draining)), "draining");
+        assert_eq!(
+            unavailable_reason(PressureInputs {
+                running: 4,
+                queued: 10,
+                ..healthy()
+            }),
+            "full"
+        );
+        assert_eq!(
+            unavailable_reason(PressureInputs {
+                cpu: 99.0,
+                ..healthy()
+            }),
+            "cpu"
+        );
+        assert_eq!(
+            unavailable_reason(PressureInputs {
+                memory: 99.0,
+                ..healthy()
+            }),
+            "memory"
+        );
+    }
+
+    #[test]
+    fn a_full_pool_with_queue_room_is_still_available() {
+        let inputs = PressureInputs {
+            running: 4,
+            queued: 3,
+            ..healthy()
+        };
+        assert_eq!(unavailable_reason(inputs), "");
+    }
+
+    #[test]
+    fn a_gate_outranks_load() {
+        let inputs = PressureInputs {
+            gate: Gate::Calibrating,
+            cpu: 99.0,
+            running: 4,
+            queued: 10,
+            ..healthy()
+        };
+        assert_eq!(unavailable_reason(inputs), "calibrating");
     }
 }

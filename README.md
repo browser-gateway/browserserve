@@ -134,7 +134,7 @@ Performance: a same-host baseline comparison (browserserve vs Browserless vs raw
 | `GET /v1/profile/{token}` | Pick up the captured profile after the session closes. Bearer-authed, single use. |
 | `GET /live` | Process liveness. |
 | `GET /ready` | The instance can serve a session now. |
-| `GET /pressure` | Load, capacity (and which host limit set it), and the active isolation tier. |
+| `GET /pressure` | Load, capacity (and which host limit set it), and the active isolation tier. `isAvailable` is `false` whenever a new session would be refused, with `reason` one of `sandbox`, `spent`, `draining`, `calibrating`, `full`, `cpu`, `memory`. |
 
 ## Sandbox
 
@@ -154,7 +154,7 @@ For untrusted content, require the sandbox and refuse the fallback with `chrome.
 
 - **Sandbox, on by default, with a safe fallback.** The sandbox stays on where the host allows it and falls back to `--no-sandbox` where the host blocks it; isolation between sessions does not depend on the sandbox. Set `chrome.requireSandbox: true` to refuse the fallback and fail closed instead (see [Sandbox](#sandbox)).
 - **Non-root.** The server does all real work as an unprivileged user (uid 999). It starts as root only to self-delegate a per-session cgroup slice when the host allows it, then drops privileges.
-- **Cloud metadata block (Docker image, opt-in).** On a cloud machine, a page the browser loads can try to reach the instance metadata server (`169.254.169.254` and friends) and read the machine's credentials. Set `BROWSERSERVE_BLOCK_METADATA=1` and the entrypoint, while still root, refuses every connection the container starts to link-local addresses (`169.254.0.0/16`), Alibaba's `100.100.100.200`, and the AWS and Google IPv6 metadata addresses, then drops privileges; the unprivileged runtime cannot undo it. Needs the `NET_ADMIN` capability (`docker run --cap-add NET_ADMIN`; Cloud Run second generation already grants it). The container refuses to start if the block cannot be applied. When the resolver is a metadata address (as on Google Cloud), DNS switches to `BROWSERSERVE_DNS` (default `1.1.1.1 8.8.8.8`); container-name lookups on a Docker network stop working in that case.
+- **Cloud metadata block (Docker image, opt-in).** On a cloud machine, a page the browser loads can try to reach the instance metadata server (`169.254.169.254` and friends) and read the machine's credentials. Set `BROWSERSERVE_BLOCK_METADATA=1` and the entrypoint, while still root, refuses every connection the container starts to link-local addresses (`169.254.0.0/16`), Alibaba's `100.100.100.200`, and the AWS and Google IPv6 metadata addresses, then drops privileges; the unprivileged runtime cannot undo it. Needs the `NET_ADMIN` capability (`docker run --cap-add NET_ADMIN`, or `capabilities: add: [NET_ADMIN]` in a Kubernetes `securityContext`). The container refuses to start if the block cannot be applied. When the resolver is a metadata address (common on cloud VMs), DNS switches to `BROWSERSERVE_DNS` (default `1.1.1.1 8.8.8.8`); container-name lookups on a Docker network stop working in that case.
 - **Authenticated surface.** When `BROWSERSERVE_TOKEN` is set, the CDP WebSocket and the `/v1/profile*` endpoints require the token; `/live`, `/ready`, and `/pressure` stay open for load balancers.
 
 See [SECURITY.md](SECURITY.md) for the reporting policy and deployment notes.
@@ -172,7 +172,7 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 | `session.memoryMaxMb` | `0` | Per-session memory cap (kernel-enforced on a delegated host, RSS soft-cap otherwise; `0` = uncapped). |
 | `session.cpuPercent` | `0` | Per-session CPU cap as a percentage of one core (`100` = one core, `150` = one and a half). Kernel-enforced on a delegated host only; `0` = uncapped. |
 | `session.pidsMax` | `0` | Per-session cap on processes plus threads. Kernel-enforced on a delegated host only; `0` = uncapped. |
-| `session.singleUse` | `false` | Serve exactly one session, then exit. Every later connection gets `503 single_use_spent`. Forces `maxSessions: 1` and skips calibration. Meant for orchestrators that replace exited instances (Cloud Run, Kubernetes, Fly Machines), so no two clients ever share a process or machine. Env: `BROWSERSERVE_SINGLE_USE`. |
+| `session.singleUse` | `false` | Serve exactly one session, then exit. Every later connection gets `503 single_use_spent`. Forces `maxSessions: 1` and skips calibration. Meant for orchestrators that replace exited instances (Cloud Run, Kubernetes, Fly Machines), so no two clients ever share a process or machine. Point the platform's readiness check at `GET /ready` with a short interval: it turns unready the moment the one session is claimed, so the platform stops sending new connections to an instance that is about to exit. Env: `BROWSERSERVE_SINGLE_USE`. |
 | `session.killGraceMs` | `5000` | SIGTERM-to-SIGKILL grace during teardown. |
 | `pressure.maxCpuPercent` | `95` | Reject new sessions above this host CPU usage. |
 | `pressure.maxMemoryPercent` | `95` | Reject new sessions above this host memory usage. |

@@ -10,6 +10,10 @@ All notable changes to browserserve are documented here. The format is based on
 - Docker image: `BROWSERSERVE_BLOCK_METADATA=1` blocks every connection the container starts to cloud instance metadata addresses (`169.254.0.0/16`, `100.100.100.200`, `fd00:ec2::254`, `fd20:ce::254`) before the browser runs, so a page cannot read the machine's credentials. TCP connection attempts and UDP are refused; replies to inbound traffic are untouched, so platform health checks from link-local addresses keep working. Fails closed: without `NET_ADMIN`, or if a rule cannot be confirmed, the container exits with a message naming the fix. Rewrites `/etc/resolv.conf` to `BROWSERSERVE_DNS` (default `1.1.1.1 8.8.8.8`) when the resolver, or Docker's embedded resolver upstream, is a blocked address. Off by default.
 - The image now includes `iptables`.
 
+### Fixed
+- `GET /pressure` reported `isAvailable: true` during boot calibration and after a single-use instance was spent, while every connection was refused. It now reports `isAvailable: false` with `reason` `calibrating` or `spent`, matching `GET /ready`.
+- README: single-use mode now says to point the platform's readiness check at `GET /ready`; without it the platform can send a new connection to the instance that is exiting.
+
 ## [0.1.12] - 2026-09-24
 
 ### Added

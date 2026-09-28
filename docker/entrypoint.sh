@@ -35,10 +35,10 @@ in_blocked_v6() {
 }
 
 # Blocks connections this container starts: TCP SYNs and all UDP. Replies to
-# inbound traffic stay allowed, because the platform's own health checks can
-# arrive from link-local addresses. REJECT fails fast; some kernels (Cloud Run's,
-# for IPv6) lack the REJECT target, so DROP is the fallback. The rule must be
-# confirmed active either way.
+# inbound traffic stay allowed, because a platform's own health checks can
+# arrive from link-local addresses. REJECT fails fast; some kernels lack the
+# IPv6 REJECT target, so DROP is the fallback. The rule must be confirmed
+# active either way.
 add_block_rule() {
   for proto in "tcp --syn" "udp"; do
     added=0
