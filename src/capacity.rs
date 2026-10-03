@@ -48,6 +48,44 @@ const SESSION_ESTIMATE: SessionFootprint = SessionFootprint {
     threads: 160,
 };
 
+/// Threads one new browser is expected to need; a new session is refused while
+/// the container has less headroom than this under its `pids.max`.
+pub const SESSION_THREAD_RESERVE: u64 = SESSION_ESTIMATE.threads;
+
+/// Live use of the container's thread limit (cgroup v2 `pids.current` against
+/// a finite `pids.max`; both count threads).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadUsage {
+    /// Threads currently in the container.
+    pub current: u64,
+    /// The container's hard limit.
+    pub max: u64,
+}
+
+impl ThreadUsage {
+    /// Threads that can still be started before the kernel refuses new ones.
+    #[must_use]
+    pub fn headroom(self) -> u64 {
+        self.max.saturating_sub(self.current)
+    }
+
+    /// Whether one more browser is likely to start without hitting the limit.
+    #[must_use]
+    pub fn fits_a_session(self) -> bool {
+        self.headroom() >= SESSION_THREAD_RESERVE
+    }
+}
+
+/// Reads the container's live thread usage. `None` when there is no finite
+/// limit or the files are unreadable (no check applies then).
+#[must_use]
+pub fn thread_usage() -> Option<ThreadUsage> {
+    Some(ThreadUsage {
+        max: imp::pids_max()?,
+        current: imp::pids_current()?,
+    })
+}
+
 /// Derives the session ceiling from host limits and, when available, a measured
 /// footprint. Before any browser is measured it uses a conservative per-session
 /// estimate rather than the CPU count alone, so the memory and thread ceilings
@@ -111,6 +149,11 @@ mod imp {
         parse_limit_file(Path::new("/sys/fs/cgroup/pids.max"))
     }
 
+    pub(super) fn pids_current() -> Option<u64> {
+        let raw = std::fs::read_to_string("/sys/fs/cgroup/pids.current").ok()?;
+        raw.trim().parse().ok()
+    }
+
     fn parse_limit_file(path: &Path) -> Option<u64> {
         let raw = std::fs::read_to_string(path).ok()?;
         let trimmed = raw.trim();
@@ -138,6 +181,10 @@ mod imp {
     }
 
     pub(super) fn pids_max() -> Option<u64> {
+        None
+    }
+
+    pub(super) fn pids_current() -> Option<u64> {
         None
     }
 }
@@ -209,6 +256,32 @@ mod tests {
         );
         assert_eq!(cap.max_sessions, 2);
         assert_eq!(cap.bound_by, "cpu");
+    }
+
+    #[test]
+    fn thread_headroom_refuses_below_one_browser() {
+        let roomy = ThreadUsage {
+            current: 490,
+            max: 1000,
+        };
+        assert_eq!(roomy.headroom(), 510);
+        assert!(roomy.fits_a_session());
+        let tight = ThreadUsage {
+            current: 1000 - SESSION_THREAD_RESERVE + 1,
+            max: 1000,
+        };
+        assert!(!tight.fits_a_session());
+        let exact = ThreadUsage {
+            current: 1000 - SESSION_THREAD_RESERVE,
+            max: 1000,
+        };
+        assert!(exact.fits_a_session());
+        let over = ThreadUsage {
+            current: 1200,
+            max: 1000,
+        };
+        assert_eq!(over.headroom(), 0);
+        assert!(!over.fits_a_session());
     }
 
     #[test]

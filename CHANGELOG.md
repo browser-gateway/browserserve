@@ -4,6 +4,12 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- On containers with a thread limit (cgroup `pids.max`, for example 1000 on some hosting platforms), busy sessions with several tabs could use up the limit. New browsers then crashed at startup (`SIGTRAP`/`SIGABRT`) while `GET /pressure` still reported `isAvailable: true`. browserserve now reads the live thread count and refuses a new session with `503 thread_limit` while fewer threads remain than one browser needs. `GET /pressure` reports `isAvailable: false` with `reason: "threads"` and a `threads` field (`current`, `max`). Running sessions are never stopped. Hosts without a thread limit are unaffected.
+- A browser that fails to launch is now logged at error level, and every refused session at warn level, with the reason sent to the client. Previously these left no trace in the logs.
+
 ## [0.1.13] - 2026-09-28
 
 ### Added

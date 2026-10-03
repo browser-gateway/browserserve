@@ -21,7 +21,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
 fn reject(status: StatusCode, reason: &str, detail: &str) -> Response {
-    tracing::info!(status = status.as_u16(), reason, detail, "session refused");
+    if reason == "launch_failed" {
+        tracing::error!(
+            status = status.as_u16(),
+            reason,
+            detail,
+            "browser failed to launch"
+        );
+    } else {
+        tracing::warn!(status = status.as_u16(), reason, detail, "session refused");
+    }
     (
         status,
         axum::Json(json!({ "error": reason, "detail": detail })),
@@ -83,6 +92,19 @@ pub async fn ws_handler(
             StatusCode::SERVICE_UNAVAILABLE,
             "pressure",
             &format!("memory at {memory:.0}%"),
+        );
+    }
+
+    if let Some(threads) = crate::capacity::thread_usage()
+        && !threads.fits_a_session()
+    {
+        return reject(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "thread_limit",
+            &format!(
+                "container thread limit nearly reached ({} of {}); retry shortly",
+                threads.current, threads.max
+            ),
         );
     }
 

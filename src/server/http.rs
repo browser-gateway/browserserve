@@ -89,6 +89,7 @@ struct PressureInputs {
     memory: f64,
     max_cpu: f64,
     max_memory: f64,
+    threads: Option<crate::capacity::ThreadUsage>,
 }
 
 /// The reason a new session would be refused right now, or `""` when it would
@@ -99,6 +100,7 @@ fn unavailable_reason(inputs: PressureInputs) -> &'static str {
         Gate::Spent => "spent",
         Gate::Draining => "draining",
         Gate::Calibrating => "calibrating",
+        Gate::Open if inputs.threads.is_some_and(|t| !t.fits_a_session()) => "threads",
         Gate::Open
             if inputs.running >= inputs.max_sessions && inputs.queued >= inputs.max_queue =>
         {
@@ -141,6 +143,7 @@ fn pressure_reason(state: &AppState) -> (&'static str, f64, f64) {
         memory,
         max_cpu: state.pressure.max_cpu_percent,
         max_memory: state.pressure.max_memory_percent,
+        threads: crate::capacity::thread_usage(),
     });
     (reason, cpu, memory)
 }
@@ -163,6 +166,8 @@ pub async fn pressure(State(state): State<Arc<AppState>>) -> Response {
         "cpu": cpu,
         "memory": memory,
         "reason": reason,
+        "threads": crate::capacity::thread_usage()
+            .map(|t| json!({ "current": t.current, "max": t.max })),
         "capacitySource": state.capacity_source,
         "isolation": state.tiers,
         "sandbox": state.factory.sandbox_state(),
@@ -284,6 +289,32 @@ mod tests {
 
     fn with_gate(gate: Gate) -> PressureInputs {
         PressureInputs { gate, ..healthy() }
+    }
+
+    #[test]
+    fn thread_limit_makes_it_unavailable() {
+        use crate::capacity::ThreadUsage;
+        let near = PressureInputs {
+            threads: Some(ThreadUsage {
+                current: 950,
+                max: 1000,
+            }),
+            ..healthy()
+        };
+        assert_eq!(unavailable_reason(near), "threads");
+        let roomy = PressureInputs {
+            threads: Some(ThreadUsage {
+                current: 300,
+                max: 1000,
+            }),
+            ..healthy()
+        };
+        assert_eq!(unavailable_reason(roomy), "");
+        let calibrating = PressureInputs {
+            gate: Gate::Calibrating,
+            ..near
+        };
+        assert_eq!(unavailable_reason(calibrating), "calibrating");
     }
 
     #[test]

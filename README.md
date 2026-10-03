@@ -134,7 +134,7 @@ Performance: a same-host baseline comparison (browserserve vs Browserless vs raw
 | `GET /v1/profile/{token}` | Pick up the captured profile after the session closes. Bearer-authed, single use. |
 | `GET /live` | Process liveness. |
 | `GET /ready` | The instance can serve a session now. |
-| `GET /pressure` | Load, capacity (and which host limit set it), and the active isolation tier. `isAvailable` is `false` whenever a new session would be refused, with `reason` one of `sandbox`, `spent`, `draining`, `calibrating`, `full`, `cpu`, `memory`. |
+| `GET /pressure` | Load, capacity (and which host limit set it), and the active isolation tier. `isAvailable` is `false` whenever a new session would be refused, with `reason` one of `sandbox`, `spent`, `draining`, `calibrating`, `threads`, `full`, `cpu`, `memory`. `threads` (`current`, `max`) shows use of the container's thread limit (`pids.max`) when one is set. |
 
 ## Sandbox
 
