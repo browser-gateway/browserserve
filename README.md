@@ -64,6 +64,68 @@ const browser = await chromium.connectOverCDP("http://localhost:9222");
 
 Every WebSocket connection gets its own isolated browser. With authentication enabled (set `BROWSERSERVE_TOKEN`), pass the token as `?token=...` on the URL or an `Authorization: Bearer` header.
 
+## Self-hosting on a VPS
+
+browserserve is one container. Anywhere you can run Docker (a VPS, a home server, Dokploy, Coolify, Portainer, Railway, Render, Fly) you can run it. Three things to decide: whether browsers run while idle, how much of the machine they may use, and how clients reach it securely.
+
+### Recommended setup
+
+```yaml
+# docker-compose.yml
+services:
+  browserserve:
+    image: ghcr.io/browser-gateway/browserserve:latest  # pin a version in production, e.g. :0.1.15
+    restart: unless-stopped
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:9222:9222"   # expose through your reverse proxy, not directly
+    environment:
+      BROWSERSERVE_TOKEN: change-me-to-a-long-random-string   # openssl rand -hex 24
+      BROWSERSERVE_MIN_READY: "0"           # no browser runs while idle
+      BROWSERSERVE_MAX_SESSIONS: "2"        # sized to the machine, see below
+      BROWSERSERVE_IDLE_TIMEOUT_MS: "300000" # close a session whose client went quiet for 5 minutes
+    deploy:
+      resources:
+        limits:
+          memory: 2560M
+          cpus: "1.5"
+```
+
+| Setting | Why |
+|---|---|
+| `BROWSERSERVE_TOKEN` | Without it, anyone who finds the address can open browsers on your machine. Clients pass it as `?token=...` or an `Authorization: Bearer` header. |
+| `BROWSERSERVE_MIN_READY=0` | Scale to zero. While idle only the browserserve process runs (tens of MB); a browser starts when a client connects (a few seconds) and is fully stopped when the session ends. Leave it at `1` if instant connects matter more than idle resources. |
+| `BROWSERSERVE_MAX_SESSIONS` | Concurrent browsers. Plan for roughly 500 MB to 1 GB of memory per session (more with many tabs or heavy pages). Setting it also skips the startup capacity measurement, which otherwise launches test browsers at boot. |
+| `BROWSERSERVE_IDLE_TIMEOUT_MS` | A client that crashes without closing its connection would otherwise keep its browser alive. |
+| Memory and CPU limits | On a shared machine, keeps a heavy page from starving your other services. |
+| `shm_size` | Chrome uses shared memory for rendering. Platforms that cannot set it (Docker Swarm, some PaaS) still work: browserserve detects a small `/dev/shm` and switches Chrome to its fallback. |
+
+### HTTPS and the address clients use
+
+Put browserserve behind the reverse proxy you already run (Traefik, Caddy, nginx); WebSockets pass through without extra configuration on Traefik and Caddy, and need the usual `Upgrade`/`Connection` headers on nginx. Point a domain at port `9222` with HTTPS, then connect with:
+
+```js
+// Puppeteer
+const browser = await puppeteer.connect({ browserWSEndpoint: "wss://browsers.example.com/?token=YOUR_TOKEN" });
+
+// Playwright
+const browser = await chromium.connectOverCDP("wss://browsers.example.com/?token=YOUR_TOKEN");
+```
+
+On Dokploy or Coolify: create an application from the Docker image `ghcr.io/browser-gateway/browserserve:<version>`, add the environment variables above, set the container port to `9222`, attach a domain with HTTPS, and set the memory and CPU limits in the advanced settings.
+
+### Checking it
+
+- `GET /ready` and `GET /pressure` are open (no token) for health checks and load balancers. `/pressure` shows running and queued sessions, and whether a new one would be refused and why.
+- `GET /json/version?token=...` shows the browserserve and Chrome versions.
+- With `BROWSERSERVE_MIN_READY=0`, the container should have no Chrome processes when no client is connected.
+
+### Notes for shared or cloud machines
+
+- **Sandbox.** Many container platforms block Chromium's sandbox; browserserve then runs Chrome with `--no-sandbox` and logs a warning (see [Sandbox](#sandbox)). That is fine for sites you trust. For untrusted sites, run plain Docker with the shipped seccomp profile, or require the sandbox.
+- **Thread limits.** Some platforms cap processes plus threads per container (often 1000). Chrome is thread-heavy, so browserserve refuses new sessions with `503 thread_limit` before that cap is hit, instead of launching a browser that crashes; `/pressure` then reports `reason: "threads"`.
+- **Cloud credentials.** On a cloud VM, set `BROWSERSERVE_BLOCK_METADATA=1` so pages cannot read the machine's credentials (see [Security](#security)).
+
 ## Profiles
 
 By default a session starts blank and is wiped on disconnect. A **profile** lets a session start from saved state and captures that state back when the session closes, so a logged-in session can be resumed later.
@@ -183,7 +245,7 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 
 See [`browserserve.example.yml`](browserserve.example.yml) for every key with inline notes. Unknown keys are rejected, so a typo in the config fails fast at startup.
 
-Environment: `PORT` (default 9222), `HOST` (default `0.0.0.0`), `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_CHROME_PATH`, `BROWSERSERVE_DATA_DIR`. Docker image only: `BROWSERSERVE_BLOCK_METADATA`, `BROWSERSERVE_DNS` (see [Security](#security)).
+Environment: `PORT` (default 9222), `HOST` (default `0.0.0.0`), `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_CHROME_PATH`, `BROWSERSERVE_DATA_DIR`, and these overrides of the keys above: `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`, `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`, `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`, `BROWSERSERVE_SINGLE_USE`, `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_NO_SANDBOX`, `BROWSERSERVE_REQUIRE_SANDBOX`. Docker image only: `BROWSERSERVE_BLOCK_METADATA`, `BROWSERSERVE_DNS` (see [Security](#security)).
 
 ## CLI
 

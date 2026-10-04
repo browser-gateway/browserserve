@@ -4,6 +4,11 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Docs
+- README: "Self-hosting on a VPS" section (compose file with scale-to-zero, session cap, idle timeout and resource limits; HTTPS behind a reverse proxy; Dokploy/Coolify steps; checks; sandbox, thread-limit and cloud-credential notes). The environment-variable list now names every override the server reads.
+
 ## [0.1.15] - 2026-10-04
 
 ### Changed
