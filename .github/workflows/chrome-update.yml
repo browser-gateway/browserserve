@@ -1,0 +1,50 @@
+name: chrome-update
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check and update the browser pins
+        id: update
+        run: |
+          set +e
+          ./scripts/chrome-update.sh --apply | tee update.log
+          code=${PIPESTATUS[0]}
+          set -e
+          [ "$code" -eq 0 ] || exit "$code"
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open a pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="chrome-update/$(date -u +%Y-%m-%d)"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "branch $branch already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "chore: update bundled browser ($(tail -n1 update.log))"
+          git push origin "$branch"
+          body="$(cat update.log)
+
+          Merge after the gate passes and a real-browser check on the built image. Not merged automatically."
+          gh pr create --title "chore: update bundled browser" --body "$body" --head "$branch" \
+            || gh issue create --title "Bundled browser is behind" --body "$body"
