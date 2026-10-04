@@ -51,6 +51,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 zeroize = { version = "1", features = ["derive"] }
 rusty-leveldb = { version = "4.0.1", default-features = false, features = ["fs"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+ruzstd = "0.9"
+snap = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.17"

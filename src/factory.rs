@@ -477,9 +477,8 @@ impl ChromeFactory {
         let dirs = self.kill_session(session).await;
         let captured = tokio::task::spawn_blocking(move || {
             let indexeddb = crate::profile::manifest::pack_native(&udd).unwrap_or_default();
-            let local_storage = crate::profile::localstorage::read_local_storage(
-                &udd.join("Default/Local Storage/leveldb"),
-            );
+            let local_storage =
+                crate::profile::localstorage::read_profile_local_storage(&udd.join("Default"));
             CapturedNative {
                 indexeddb,
                 local_storage,

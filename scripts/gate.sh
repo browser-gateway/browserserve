@@ -13,6 +13,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 #   rustup target add x86_64-unknown-linux-musl
 if [ "$(uname -s)" = "Darwin" ] && rustup target list --installed | grep -q x86_64-unknown-linux-musl; then
   echo "== clippy (linux cross-check)"
+  # Bundled SQLite is C: compile it for the musl target with zig when no musl gcc exists.
+  if ! command -v x86_64-linux-musl-gcc >/dev/null && command -v zig >/dev/null; then
+    export CC_x86_64_unknown_linux_musl="$PWD/scripts/zig-cc-x86_64-musl.sh"
+    export AR_x86_64_unknown_linux_musl="$PWD/scripts/zig-ar.sh"
+  fi
   cargo clippy --target x86_64-unknown-linux-musl --all-targets --all-features -- -D warnings
 else
   echo "== clippy (linux cross-check) SKIPPED — add x86_64-unknown-linux-musl target to enable"
