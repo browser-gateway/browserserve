@@ -4,7 +4,7 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.15] - 2026-10-04
 
 ### Changed
 - The image now bundles Chrome 154.0.8037.92 on amd64 (Google's Chrome for Testing, current Stable; was 149.0.7827.55) and Chromium 153.0.8010.12 on arm64 (Playwright revision 1243, the newest arm64 build; Google publishes no linux-arm64 Chrome). amd64 now downloads from Google's own Chrome for Testing storage.
