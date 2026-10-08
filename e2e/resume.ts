@@ -80,12 +80,28 @@ if (same) {
 }
 check("not parked while a client is attached", (await pressure()).parked === 0);
 
+// 2b. Resume with Puppeteer, which finds pages through target discovery: the
+// previous client's discovery must be reset, and the browser must answer quickly.
+await pw.close();
+check("parked again for the Puppeteer resume", await waitFor(async () => (await pressure()).parked === 1, 5000));
+const second = await openRaw(`${BASE}/?resume=${token}`);
+const askedAt = Date.now();
+const b2 = await puppeteer.connect({ transport: transport(second.ws), protocolTimeout: 30000 });
+check("resumed browser answers within 1.5 s", Date.now() - askedAt < 1500, `${Date.now() - askedAt} ms`);
+await sleep(500);
+const ppPages = await b2.pages();
+check("Puppeteer sees the same page after resume", ppPages.some((p) => p.url().startsWith(PAGE)), ppPages.map((p) => p.url()).join(", "));
+await b2.disconnect();
+second.ws.close();
+check("parked after the Puppeteer client leaves", await waitFor(async () => (await pressure()).parked === 1, 5000));
+const pw2 = await chromium.connectOverCDP(`${BASE}/?resume=${token}`, { timeout: 20000 });
+
 // 3. A second resume with the same token while attached is refused.
 const dup = await openRaw(`${BASE}/?resume=${token}`);
 check("token cannot be claimed while a client is attached", dup.status === 404, `status ${dup.status}`);
 
 // 4. Leave cleanly: parks again; after the window it is destroyed and the token is refused.
-await pw.close();
+await pw2.close();
 check("clean disconnect parks again", await waitFor(async () => (await pressure()).parked === 1, 5000));
 await sleep(WINDOW_MS + 2000);
 const after = await pressure();

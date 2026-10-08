@@ -17,8 +17,10 @@ pub const RESUME_TOKEN_HEADER: &str = "browserserve-resume-token";
 
 const CLEANUP_CALL_TIMEOUT: Duration = Duration::from_secs(2);
 // Far above any id a CDP client library allocates, so a late reply to the
-// previous client's command cannot be mistaken for a cleanup reply.
-const CLEANUP_FIRST_ID: u64 = 1 << 40;
+// previous client's command cannot be mistaken for a cleanup reply, yet inside
+// the 32-bit range Chrome accepts for message ids (crdtp/dispatch.cc rejects
+// larger ids without echoing them, so the call would never be answered).
+const CLEANUP_FIRST_ID: u64 = 2_000_000_000;
 
 /// Parked sessions, keyed by resume token. A session is listed only while it
 /// is waiting for a client; a claimed token disappears until the session is
@@ -183,6 +185,11 @@ async fn clean_slate(pipe: &mut CdpPipe) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_ids_fit_chromes_message_id_range() {
+        assert!(CLEANUP_FIRST_ID + 1_000 <= u64::try_from(i32::MAX).unwrap());
+    }
 
     #[test]
     fn tokens_are_long_and_distinct() {
