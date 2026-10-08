@@ -1,24 +1,28 @@
 //! The WS session endpoint: auth, admission, claim, bridge, destroy.
 
 use crate::bridge::{bridge, bridge_reclaimable};
-use crate::chrome::CdpClient;
-use crate::factory::ChromeSession;
-use crate::pool::{ClaimError, SessionFactory};
+use crate::chrome::{CdpClient, CdpPipe};
+use crate::factory::{ChromeFactory, ChromeSession};
+use crate::pool::{ClaimError, Claimed, SessionFactory};
 use crate::profile::cdp::{
     apply_cookies, apply_local_storage, attach_page_target, capture_cookies,
 };
 use crate::profile::payload::ProfilePayload;
 use crate::server::http::QueryMap;
+use crate::server::resume::{self, RESUME_TOKEN_HEADER, ResumeRegistry};
 use crate::server::single_use::SpentGuard;
 use crate::server::{AppState, http};
-use axum::extract::ws::WebSocket;
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+const CLOSE_RESUME_EXPIRED: u16 = 1011;
 
 fn reject(status: StatusCode, reason: &str, detail: &str) -> Response {
     if reason == "launch_failed" {
@@ -77,6 +81,12 @@ pub async fn ws_handler(
 ) -> Response {
     if !http::check_auth(&state, &query, &headers) {
         return http::unauthorized();
+    }
+
+    // Resume: hand this connection to the parked session's own task. No new
+    // browser is launched, so the admission checks below do not apply.
+    if let Some(token) = query.get("resume").cloned() {
+        return resume_session(&state, &token, ws);
     }
 
     let (cpu, memory) = state.gauge.snapshot();
@@ -173,21 +183,90 @@ pub async fn ws_handler(
         );
     };
 
+    serve_pool_session(&state, ws, claimed, pipe, spent_guard)
+}
+
+/// Serves a claimed pool browser over the upgraded WebSocket. With a resume
+/// window configured, the session is resumable and the response carries its
+/// resume token; otherwise the browser is destroyed when the client leaves.
+fn serve_pool_session(
+    state: &AppState,
+    ws: WebSocketUpgrade,
+    claimed: Claimed<ChromeFactory>,
+    pipe: CdpPipe,
+    spent_guard: Option<SpentGuard>,
+) -> Response {
     let pool = state.pool.clone();
     let cancel = state.cancel.clone();
     let tracker = state.tracker.clone();
     let idle_timeout = state.idle_timeout;
-    ws.max_message_size(state.max_message_bytes)
+    let resumable = state.resume.clone().and_then(|registry| match ResumeRegistry::new_token() {
+        Ok(token) => Some((registry, token)),
+        Err(e) => {
+            tracing::warn!(error = %e, "no random source for a resume token; session not resumable");
+            None
+        }
+    });
+    let header_token = resumable.as_ref().map(|(_, token)| token.clone());
+    let mut response = ws
+        .max_message_size(state.max_message_bytes)
         .on_upgrade(move |socket| {
             tracker.track_future(async move {
-                tokio::select! {
-                    () = bridge(socket, pipe, idle_timeout) => {}
-                    () = cancel.cancelled() => {}
+                match resumable {
+                    Some((registry, token)) => {
+                        resume::serve(&registry, &token, socket, pipe, idle_timeout, &cancel).await;
+                    }
+                    None => {
+                        tokio::select! {
+                            () = bridge(socket, pipe, idle_timeout) => {}
+                            () = cancel.cancelled() => {}
+                        }
+                    }
                 }
                 pool.destroy(claimed).await;
                 drop(spent_guard);
             })
-        })
+        });
+    if let Some(token) = header_token
+        && let Ok(value) = HeaderValue::from_str(&token)
+    {
+        response.headers_mut().insert(RESUME_TOKEN_HEADER, value);
+    }
+    response
+}
+
+/// Hands a reconnecting client to its parked session. The session's own task
+/// keeps the browser and its pipe; this only delivers the new WebSocket.
+fn resume_session(state: &AppState, token: &str, ws: WebSocketUpgrade) -> Response {
+    let claimed = state
+        .resume
+        .as_ref()
+        .and_then(|registry| registry.claim(token));
+    let Some(handoff) = claimed else {
+        return reject(
+            StatusCode::NOT_FOUND,
+            "unknown_resume_token",
+            "no parked session for this token (unknown, expired, or already resumed)",
+        );
+    };
+    let mut response =
+        ws.max_message_size(state.max_message_bytes)
+            .on_upgrade(move |socket| async move {
+                if let Err(mpsc::error::SendError(mut socket)) = handoff.send(socket).await {
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code: CLOSE_RESUME_EXPIRED,
+                            reason: Utf8Bytes::from_static(
+                                "session ended before it could be resumed",
+                            ),
+                        })))
+                        .await;
+                }
+            });
+    if let Ok(value) = HeaderValue::from_str(token) {
+        response.headers_mut().insert(RESUME_TOKEN_HEADER, value);
+    }
+    response
 }
 
 fn now_secs() -> f64 {

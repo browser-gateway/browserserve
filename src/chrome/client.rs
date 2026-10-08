@@ -43,6 +43,17 @@ impl<'a> CdpClient<'a> {
         Self { pipe, next_id: 1 }
     }
 
+    /// Wraps a pipe that another client used before, numbering commands from
+    /// `first_id` so a late reply to that client's commands is never mistaken
+    /// for one of ours.
+    #[must_use]
+    pub fn with_first_id(pipe: &'a mut CdpPipe, first_id: u64) -> Self {
+        Self {
+            pipe,
+            next_id: first_id,
+        }
+    }
+
     /// Sends one CDP command WITHOUT waiting for the reply and returns its `id`.
     ///
     /// For event-driven flows (e.g. navigating behind a `Fetch` stub) where the

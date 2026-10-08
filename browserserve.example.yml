@@ -19,6 +19,7 @@ session:
   tmpfsSizeMb: 512         # size cap for RAM-backed session dirs (Linux)
   killGraceMs: 5000        # SIGTERM to SIGKILL grace during teardown
   singleUse: false         # serve one session, then exit (forces maxSessions 1, no calibration). Env: BROWSERSERVE_SINGLE_USE
+  resumeWindowMs: 0        # keep a session's browser this many ms after its client leaves; reconnect with /?resume=<Browserserve-Resume-Token>. 0 = off. Env: BROWSERSERVE_RESUME_WINDOW_MS
 
 pressure:
   maxCpuPercent: 95        # reject new sessions above this CPU usage

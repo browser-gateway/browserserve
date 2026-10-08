@@ -6,6 +6,9 @@ All notable changes to browserserve are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- `session.resumeWindowMs` / `BROWSERSERVE_RESUME_WINDOW_MS` (default `0`, off): when a client goes away (clean close, crash, or a connection cut by a proxy restart), the browser is kept for the window instead of destroyed. The upgrade response carries `Browserserve-Resume-Token`; `WS /?resume=<token>` within the window reattaches to the same browser with its pages, cookies and storage. Replies to the previous client's in-flight commands are discarded while parked, and its page sessions are detached before the next client is attached. Unknown, expired or already-claimed tokens get `404 unknown_resume_token`. `/pressure` reports `parked`. Not applied to profile sessions or single-use mode.
+
 ### Docs
 - README: "Self-hosting on a VPS" section (compose file with scale-to-zero, session cap, idle timeout and resource limits; HTTPS behind a reverse proxy; Dokploy/Coolify steps; checks; sandbox, thread-limit and cloud-credential notes). The environment-variable list now names every override the server reads.
 

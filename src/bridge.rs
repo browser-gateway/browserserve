@@ -20,6 +20,18 @@ pub async fn bridge(socket: WebSocket, pipe: CdpPipe, idle_timeout: Option<Durat
     let _ = bridge_reclaimable(socket, pipe, idle_timeout).await;
 }
 
+/// How a bridged session ended.
+pub enum BridgeEnd {
+    /// The client went away (close frame, dropped connection, or a failed send
+    /// to it). The browser is still alive and its pipe is handed back.
+    ClientGone(CdpPipe),
+    /// The client sent nothing for the idle timeout and was sent a `1013` close.
+    /// The browser is still alive and its pipe is handed back.
+    IdleTimeout(CdpPipe),
+    /// The browser side closed first; nothing is left to reuse.
+    BrowserGone,
+}
+
 /// Like [`bridge`], but returns the CDP pipe when the CLIENT closed (the browser
 /// is still alive, so the caller can run post-session capture over it), or
 /// `None` when the browser closed first (nothing left to capture).
@@ -28,12 +40,25 @@ pub async fn bridge_reclaimable(
     pipe: CdpPipe,
     idle_timeout: Option<Duration>,
 ) -> Option<CdpPipe> {
+    match bridge_session(socket, pipe, idle_timeout).await {
+        BridgeEnd::ClientGone(pipe) | BridgeEnd::IdleTimeout(pipe) => Some(pipe),
+        BridgeEnd::BrowserGone => None,
+    }
+}
+
+/// Pumps messages both ways until either side ends, and reports which side
+/// ended. The pipe comes back whenever the browser is still alive.
+pub async fn bridge_session(
+    socket: WebSocket,
+    pipe: CdpPipe,
+    idle_timeout: Option<Duration>,
+) -> BridgeEnd {
     let (mut reader, mut writer) = pipe.split();
     let (mut ws_sink, mut ws_stream) = socket.split();
 
-    // Borrowed pumps: whichever side closes, the other future is cancelled but
-    // its half stays owned here, so a client-close leaves the pipe reassemblable.
-    let client_closed = tokio::select! {
+    // Borrowed pumps: whichever side ends, the other future is cancelled but
+    // its half stays owned here, so the pipe stays reassemblable.
+    let ended = tokio::select! {
         outcome = pump_client_to_browser(&mut ws_stream, &mut writer, idle_timeout) => {
             if let PumpExit::IdleTimeout(dur) = outcome {
                 let _ = ws_sink
@@ -45,12 +70,35 @@ pub async fn bridge_reclaimable(
                         )),
                     })))
                     .await;
+                Ended::IdleTimeout
+            } else {
+                Ended::ClientGone
             }
-            true
         }
-        () = pump_browser_to_client(&mut reader, &mut ws_sink) => false,
+        exit = pump_browser_to_client(&mut reader, &mut ws_sink) => match exit {
+            BrowserPumpExit::BrowserGone => Ended::BrowserGone,
+            BrowserPumpExit::ClientGone => Ended::ClientGone,
+        },
     };
-    client_closed.then(|| CdpPipe::from_halves(reader, writer))
+    match ended {
+        Ended::ClientGone => BridgeEnd::ClientGone(CdpPipe::from_halves(reader, writer)),
+        Ended::IdleTimeout => BridgeEnd::IdleTimeout(CdpPipe::from_halves(reader, writer)),
+        Ended::BrowserGone => BridgeEnd::BrowserGone,
+    }
+}
+
+enum Ended {
+    ClientGone,
+    IdleTimeout,
+    BrowserGone,
+}
+
+/// Why the browser pump exited.
+enum BrowserPumpExit {
+    /// The browser closed its pipe (the client was sent a `1011` close).
+    BrowserGone,
+    /// Sending to the client failed: the client is gone, the browser is not.
+    ClientGone,
 }
 
 /// Why the client pump exited.
@@ -89,7 +137,10 @@ async fn pump_client_to_browser(
     }
 }
 
-async fn pump_browser_to_client(cdp: &mut CdpReader, ws: &mut SplitSink<WebSocket, Message>) {
+async fn pump_browser_to_client(
+    cdp: &mut CdpReader,
+    ws: &mut SplitSink<WebSocket, Message>,
+) -> BrowserPumpExit {
     loop {
         let Ok(frame) = cdp.recv_raw().await else {
             let _ = ws
@@ -98,14 +149,14 @@ async fn pump_browser_to_client(cdp: &mut CdpReader, ws: &mut SplitSink<WebSocke
                     reason: axum::extract::ws::Utf8Bytes::from_static("browser closed"),
                 })))
                 .await;
-            return;
+            return BrowserPumpExit::BrowserGone;
         };
         let message = match axum::extract::ws::Utf8Bytes::try_from(frame.clone()) {
             Ok(text) => Message::Text(text),
             Err(_) => Message::Binary(frame),
         };
         if ws.send(message).await.is_err() {
-            return;
+            return BrowserPumpExit::ClientGone;
         }
     }
 }

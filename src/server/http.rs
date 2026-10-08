@@ -160,6 +160,7 @@ pub async fn pressure(State(state): State<Arc<AppState>>) -> Response {
         "running": pool_stats.running,
         "queued": pool_stats.queued,
         "warm": pool_stats.warm,
+        "parked": state.resume.as_ref().map_or(0, |registry| registry.parked()),
         "isAvailable": reason.is_empty(),
         "maxConcurrent": pool_stats.max_sessions,
         "maxQueued": pool_stats.max_queue,

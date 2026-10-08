@@ -95,6 +95,11 @@ pub struct SessionConfig {
     /// calibration. For orchestrators that replace exited instances, so no two
     /// clients ever share a process or machine.
     pub single_use: bool,
+    /// Keep a session's browser alive this many milliseconds after its client
+    /// goes away, so a client reconnecting with the session's resume token gets
+    /// the same browser. `0` disables (the browser is destroyed at once). Not
+    /// applied to profile sessions or single-use mode.
+    pub resume_window_ms: u64,
 }
 
 impl Default for SessionConfig {
@@ -107,6 +112,7 @@ impl Default for SessionConfig {
             tmpfs_size_mb: 512,
             kill_grace_ms: 5_000,
             single_use: false,
+            resume_window_ms: 0,
         }
     }
 }
@@ -244,7 +250,7 @@ fn is_truthy(value: &str) -> bool {
 /// `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`,
 /// `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`,
 /// `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`,
-/// `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_SINGLE_USE`. Returns a
+/// `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_SINGLE_USE`, `BROWSERSERVE_RESUME_WINDOW_MS`. Returns a
 /// validated [`Loaded`].
 ///
 /// # Errors
@@ -278,6 +284,13 @@ pub fn load<S: std::hash::BuildHasher>(
         config.session.idle_timeout_ms = value.trim().parse().map_err(|_| {
             ConfigError::Invalid(format!(
                 "BROWSERSERVE_IDLE_TIMEOUT_MS must be a non-negative integer, got {value:?}"
+            ))
+        })?;
+    }
+    if let Some(value) = env.get("BROWSERSERVE_RESUME_WINDOW_MS") {
+        config.session.resume_window_ms = value.trim().parse().map_err(|_| {
+            ConfigError::Invalid(format!(
+                "BROWSERSERVE_RESUME_WINDOW_MS must be a non-negative integer, got {value:?}"
             ))
         })?;
     }
@@ -582,6 +595,21 @@ dataDir: /var/lib/bgr
     fn memory_max_mb_default_is_disabled() {
         let loaded = load(None, &HashMap::new()).unwrap();
         assert_eq!(loaded.config.session.memory_max_mb, 0);
+    }
+
+    #[test]
+    fn resume_window_is_off_by_default_and_set_by_env() {
+        assert_eq!(
+            load(None, &HashMap::new())
+                .unwrap()
+                .config
+                .session
+                .resume_window_ms,
+            0
+        );
+        let on = load(None, &env(&[("BROWSERSERVE_RESUME_WINDOW_MS", "60000")])).unwrap();
+        assert_eq!(on.config.session.resume_window_ms, 60_000);
+        assert!(load(None, &env(&[("BROWSERSERVE_RESUME_WINDOW_MS", "soon")])).is_err());
     }
 
     #[test]

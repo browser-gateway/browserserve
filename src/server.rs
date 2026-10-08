@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod http;
 pub mod profiles;
+pub mod resume;
 pub mod single_use;
 pub mod ws;
 
@@ -62,6 +63,9 @@ pub struct AppState {
     pub calibrating: Arc<AtomicBool>,
     /// Present in single-use mode: this process serves one session, then exits.
     pub single_use: Option<single_use::SingleUse>,
+    /// Present when `session.resumeWindowMs` is above zero: parked sessions
+    /// waiting for their client to reconnect.
+    pub resume: Option<Arc<resume::ResumeRegistry>>,
 }
 
 /// Builds the router: probe routes carry an HTTP timeout; the WS route does
@@ -155,6 +159,11 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
             .then(|| Duration::from_millis(config.session.idle_timeout_ms)),
         calibrating: calibrating.clone(),
         single_use: config.session.single_use.then(single_use::SingleUse::new),
+        resume: (config.session.resume_window_ms > 0 && !config.session.single_use).then(|| {
+            Arc::new(resume::ResumeRegistry::new(Duration::from_millis(
+                config.session.resume_window_ms,
+            )))
+        }),
     });
 
     let bind = format!("{}:{}", loaded.serve.host, loaded.serve.port);
