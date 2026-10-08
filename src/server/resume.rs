@@ -80,11 +80,11 @@ impl ResumeRegistry {
     }
 }
 
-/// Serves a session that can be resumed: bridges the client; when the client
-/// goes away, parks the browser for the registry's window, discarding
+/// Serves a session that can be resumed: bridges the client; when the client's
+/// connection breaks, parks the browser for the registry's window, discarding
 /// everything the browser sends meanwhile; a client presenting the token gets
 /// the same browser. Returns when the session must be destroyed (browser gone,
-/// idle timeout, window expired, or shutdown).
+/// a deliberate close, idle timeout, window expired, or shutdown).
 pub async fn serve(
     registry: &ResumeRegistry,
     token: &str,
