@@ -4,6 +4,11 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18] - 2026-10-08
+
+### Changed
+- The resume window now holds a browser only when the client's connection breaks: no close frame, an error, or a close code other than 1000 (a proxy that cuts the connection, or a gateway holding the session for a reconnect, sends one of these). A client that closes with code 1000 or no code has finished, and its browser is destroyed at once, as with the window off. Before, every disconnect held a browser for the whole window, so short sessions that close normally used up capacity for nothing.
+
 ## [0.1.17] - 2026-10-08
 
 ### Fixed
