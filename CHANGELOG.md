@@ -4,7 +4,7 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.16] - 2026-10-08
 
 ### Added
 - `session.resumeWindowMs` / `BROWSERSERVE_RESUME_WINDOW_MS` (default `0`, off): when a client goes away (clean close, crash, or a connection cut by a proxy restart), the browser is kept for the window instead of destroyed. The upgrade response carries `Browserserve-Resume-Token`; `WS /?resume=<token>` within the window reattaches to the same browser with its pages, cookies and storage. Replies to the previous client's in-flight commands are discarded while parked, and its page sessions are detached before the next client is attached. Unknown, expired or already-claimed tokens get `404 unknown_resume_token`. `/pressure` reports `parked`. Not applied to profile sessions or single-use mode.
