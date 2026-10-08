@@ -4,6 +4,11 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.17] - 2026-10-08
+
+### Fixed
+- Resuming a parked session took about 6 seconds and left the previous client's target discovery switched on, so Puppeteer saw no pages after a resume. The cleanup commands sent before the new client attaches used message ids above the 32-bit range Chrome accepts, so Chrome rejected them and each call ran out its timeout. Cleanup now uses ids inside that range; a resumed browser answers in under 100 ms and every client sees its pages.
+
 ## [0.1.16] - 2026-10-08
 
 ### Added
