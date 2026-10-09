@@ -4,6 +4,12 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.19] - 2026-10-09
+
+### Fixed
+- A profile session could start without its saved cookies and localStorage when several sessions launched at once: if the fresh browser had not opened its first page yet, seeding gave up and the browser was served empty, so a logged-in profile came back logged out. Seeding now waits up to two seconds for the first page and opens a blank one if none appears, and loads cookies at browser level before touching any page.
+- If a profile still cannot be loaded, the session is refused (WebSocket close `1011`, "profile could not be loaded; connect again") instead of serving a browser without it. Nothing is captured back from a refused session.
+
 ## [0.1.18] - 2026-10-08
 
 ### Changed
