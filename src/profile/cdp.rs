@@ -8,7 +8,13 @@ use crate::chrome::{CdpClient, CdpError};
 use crate::profile::cookie::{Cookie, DropCounts, sanitize};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::time::Duration;
 use thiserror::Error;
+
+// A just-launched Chrome may not have opened its first page yet when seeding
+// starts, more often when several launch at once; wait briefly, then make one.
+const PAGE_TARGET_WAIT: Duration = Duration::from_secs(2);
+const PAGE_TARGET_POLL: Duration = Duration::from_millis(100);
 
 /// Error from a CDP-level profile operation.
 #[derive(Debug, Error)]
@@ -87,23 +93,19 @@ pub struct OriginState {
 }
 
 /// Attaches to the browser's page target in flat mode and returns its session
-/// id, which the localStorage inject/capture calls route commands to.
+/// id, which the localStorage inject/capture calls route commands to. Waits up
+/// to two seconds for the first page of a fresh browser, then opens a
+/// blank one.
 ///
 /// # Errors
 ///
 /// [`ProfileCdpError::Cdp`] on command failure; [`ProfileCdpError::Unexpected`]
-/// if there is no page target or the attach returns no session id.
+/// if no page target can be found or made, or the attach returns no session id.
 pub async fn attach_page_target(client: &mut CdpClient<'_>) -> Result<String, ProfileCdpError> {
-    let targets = client.call("Target.getTargets", json!({})).await?;
-    let target_id = targets
-        .get("targetInfos")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|t| t.get("type").and_then(Value::as_str) == Some("page"))
-        .and_then(|t| t.get("targetId").and_then(Value::as_str))
-        .ok_or(ProfileCdpError::Unexpected("no page target to attach"))?
-        .to_owned();
+    let target_id = match first_page_target(client).await? {
+        Some(id) => id,
+        None => open_blank_page(client).await?,
+    };
     let attached = client
         .call(
             "Target.attachToTarget",
@@ -116,6 +118,36 @@ pub async fn attach_page_target(client: &mut CdpClient<'_>) -> Result<String, Pr
         .ok_or(ProfileCdpError::Unexpected("attach returned no sessionId"))?
         .to_owned();
     Ok(session_id)
+}
+
+async fn first_page_target(client: &mut CdpClient<'_>) -> Result<Option<String>, ProfileCdpError> {
+    let deadline = tokio::time::Instant::now() + PAGE_TARGET_WAIT;
+    loop {
+        let targets = client.call("Target.getTargets", json!({})).await?;
+        let page = targets
+            .get("targetInfos")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|t| t.get("type").and_then(Value::as_str) == Some("page"))
+            .and_then(|t| t.get("targetId").and_then(Value::as_str))
+            .map(str::to_owned);
+        if page.is_some() || tokio::time::Instant::now() >= deadline {
+            return Ok(page);
+        }
+        tokio::time::sleep(PAGE_TARGET_POLL).await;
+    }
+}
+
+async fn open_blank_page(client: &mut CdpClient<'_>) -> Result<String, ProfileCdpError> {
+    let created = client
+        .call("Target.createTarget", json!({ "url": "about:blank" }))
+        .await?;
+    created
+        .get("targetId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or(ProfileCdpError::Unexpected("no page target to attach"))
 }
 
 /// Restores localStorage for each origin by loading a synthetic blank document
@@ -283,7 +315,7 @@ fn restore_script(entries: &[StorageEntry]) -> String {
 mod tests {
     use super::*;
     use crate::profile::cookie::SameSite;
-    use crate::test_support::mock_pipe;
+    use crate::test_support::{MockBrowser, mock_pipe};
     use std::time::Duration;
 
     fn cookie(name: &str, secure: bool, same_site: SameSite) -> Cookie {
@@ -432,27 +464,78 @@ mod tests {
         chrome.await.unwrap();
     }
 
+    async fn reply_targets(browser: &mut MockBrowser, targets: Value) {
+        let cmd = browser.expect("Target.getTargets").await;
+        browser
+            .write(&json!({ "id": cmd["id"], "result": { "targetInfos": targets } }))
+            .await;
+    }
+
+    async fn reply_attach(browser: &mut MockBrowser, target_id: &str, session_id: &str) {
+        let cmd = browser.expect("Target.attachToTarget").await;
+        assert_eq!(cmd["params"]["targetId"], target_id);
+        assert_eq!(cmd["params"]["flatten"], true);
+        browser
+            .write(&json!({ "id": cmd["id"], "result": { "sessionId": session_id } }))
+            .await;
+    }
+
     #[tokio::test]
     async fn attach_page_target_picks_the_page_and_returns_its_session() {
         let (mut cdp, mut browser) = mock_pipe();
         let chrome = tokio::spawn(async move {
-            let cmd = browser.expect("Target.getTargets").await;
-            browser
-                .write(&json!({ "id": cmd["id"], "result": { "targetInfos": [
-                    { "type": "browser", "targetId": "B" },
-                    { "type": "page", "targetId": "P1" }
-                ] } }))
-                .await;
-            let cmd = browser.expect("Target.attachToTarget").await;
-            assert_eq!(cmd["params"]["targetId"], "P1");
-            assert_eq!(cmd["params"]["flatten"], true);
-            browser
-                .write(&json!({ "id": cmd["id"], "result": { "sessionId": "S1" } }))
-                .await;
+            reply_targets(
+                &mut browser,
+                json!([{ "type": "browser", "targetId": "B" }, { "type": "page", "targetId": "P1" }]),
+            )
+            .await;
+            reply_attach(&mut browser, "P1", "S1").await;
         });
-
         let mut client = CdpClient::new(&mut cdp);
         assert_eq!(attach_page_target(&mut client).await.unwrap(), "S1");
+        chrome.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attach_page_target_waits_for_the_first_page_of_a_fresh_browser() {
+        let (mut cdp, mut browser) = mock_pipe();
+        let chrome = tokio::spawn(async move {
+            reply_targets(
+                &mut browser,
+                json!([{ "type": "browser", "targetId": "B" }]),
+            )
+            .await;
+            reply_targets(&mut browser, json!([{ "type": "page", "targetId": "P1" }])).await;
+            reply_attach(&mut browser, "P1", "S1").await;
+        });
+        let mut client = CdpClient::new(&mut cdp);
+        assert_eq!(attach_page_target(&mut client).await.unwrap(), "S1");
+        chrome.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attach_page_target_opens_a_blank_page_when_none_appears() {
+        let (mut cdp, mut browser) = mock_pipe();
+        let chrome = tokio::spawn(async move {
+            loop {
+                let cmd = browser.read().await;
+                if cmd["method"] == "Target.getTargets" {
+                    browser
+                        .write(&json!({ "id": cmd["id"], "result": { "targetInfos": [] } }))
+                        .await;
+                    continue;
+                }
+                assert_eq!(cmd["method"], "Target.createTarget");
+                assert_eq!(cmd["params"]["url"], "about:blank");
+                browser
+                    .write(&json!({ "id": cmd["id"], "result": { "targetId": "NEW" } }))
+                    .await;
+                break;
+            }
+            reply_attach(&mut browser, "NEW", "S2").await;
+        });
+        let mut client = CdpClient::new(&mut cdp);
+        assert_eq!(attach_page_target(&mut client).await.unwrap(), "S2");
         chrome.await.unwrap();
     }
 

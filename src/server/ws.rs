@@ -5,7 +5,7 @@ use crate::chrome::{CdpClient, CdpPipe};
 use crate::factory::{ChromeFactory, ChromeSession};
 use crate::pool::{ClaimError, Claimed, SessionFactory};
 use crate::profile::cdp::{
-    apply_cookies, apply_local_storage, attach_page_target, capture_cookies,
+    ProfileCdpError, apply_cookies, apply_local_storage, attach_page_target, capture_cookies,
 };
 use crate::profile::payload::ProfilePayload;
 use crate::server::http::QueryMap;
@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 const CLOSE_RESUME_EXPIRED: u16 = 1011;
+const CLOSE_PROFILE_NOT_LOADED: u16 = 1011;
 
 fn reject(status: StatusCode, reason: &str, detail: &str) -> Response {
     if reason == "launch_failed" {
@@ -275,6 +276,16 @@ fn now_secs() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
+/// Writes a profile's cookies and localStorage into a fresh browser. Cookies go
+/// in at browser level first, so they never depend on a page being ready.
+async fn seed_profile(pipe: &mut CdpPipe, payload: &ProfilePayload) -> Result<(), ProfileCdpError> {
+    let mut client = CdpClient::new(pipe);
+    apply_cookies(&mut client, &payload.cookies, now_secs()).await?;
+    let session_id = attach_page_target(&mut client).await?;
+    apply_local_storage(&mut client, &session_id, &payload.local_storage).await?;
+    Ok(())
+}
+
 /// Seeds, serves, and captures one profile session on its own fresh browser.
 async fn profile_session(
     state: Arc<AppState>,
@@ -291,23 +302,20 @@ async fn profile_session(
     };
 
     // Inject the portable core over our own pipe, before the client is bridged.
-    {
-        let mut client = CdpClient::new(&mut pipe);
-        match attach_page_target(&mut client).await {
-            Ok(session_id) => {
-                if let Err(e) = apply_cookies(&mut client, &payload.cookies, now_secs()).await {
-                    tracing::warn!(error = %e, "profile cookie inject failed");
-                }
-                if let Err(e) =
-                    apply_local_storage(&mut client, &session_id, &payload.local_storage).await
-                {
-                    tracing::warn!(error = %e, "profile localStorage inject failed");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "profile attach failed; serving unseeded"),
-        }
-    }
+    let seeded = seed_profile(&mut pipe, &payload).await;
     drop(payload);
+    if let Err(e) = seeded {
+        tracing::error!(error = %e, "profile could not be loaded; refusing the session");
+        let mut socket = socket;
+        let _ = socket
+            .send(Message::Close(Some(CloseFrame {
+                code: CLOSE_PROFILE_NOT_LOADED,
+                reason: Utf8Bytes::from_static("profile could not be loaded; connect again"),
+            })))
+            .await;
+        state.factory.destroy(session).await;
+        return;
+    }
 
     let idle_timeout = state.idle_timeout;
 
