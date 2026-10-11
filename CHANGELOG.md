@@ -4,7 +4,7 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.20] - 2026-10-11
 
 ### Added
 - Profile sessions (`?profileToken=`) are resumable when the resume window is on: they carry a `Browserserve-Resume-Token`, a broken connection holds the browser, and `/?resume=<token>` reattaches. A saving session captures its profile once, when the session finally ends: a close with code 1000, the idle timeout, or the window running out with no reconnect. Nothing is captured at the break. Read-only profile sessions resume and never capture.
