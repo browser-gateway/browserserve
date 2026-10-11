@@ -6,6 +6,9 @@ All notable changes to browserserve are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Profile sessions (`?profileToken=`) are resumable when the resume window is on: they carry a `Browserserve-Resume-Token`, a broken connection holds the browser, and `/?resume=<token>` reattaches. A saving session captures its profile once, when the session finally ends: a close with code 1000, the idle timeout, or the window running out with no reconnect. Nothing is captured at the break. Read-only profile sessions resume and never capture.
+
 ### Fixed
 - A profile session that ran longer than two minutes could lose everything it should have saved: the store that hands profiles between the gateway and the browser expired the record of a session still in progress once any other profile session came or went, so the capture at the end was dropped and the gateway kept the old profile. Running sessions now keep their record for as long as they last; sessions that end without a capture (read-only, refused, browser gone) release theirs.
 

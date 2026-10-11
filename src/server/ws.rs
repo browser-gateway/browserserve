@@ -157,13 +157,24 @@ pub async fn ws_handler(
         let cancel = state.cancel.clone();
         let tracker = state.tracker.clone();
         let max = state.max_message_bytes;
+        let resumable = resumable_session(&state);
+        let header_token = resumable
+            .as_ref()
+            .map(|(_, resume_token)| resume_token.clone());
         let state = Arc::clone(&state);
-        return ws.max_message_size(max).on_upgrade(move |socket| {
+        let response = ws.max_message_size(max).on_upgrade(move |socket| {
             tracker.track_future(async move {
-                profile_session(state, socket, session, payload, token, cancel, read_only).await;
+                let ending = ProfileEnding {
+                    token,
+                    cancel,
+                    read_only,
+                    resumable,
+                };
+                profile_session(state, socket, session, payload, ending).await;
                 drop(spent_guard);
             })
         });
+        return with_resume_header(response, header_token);
     }
 
     let mut claimed = match state.pool.claim().await {
@@ -201,15 +212,9 @@ fn serve_pool_session(
     let cancel = state.cancel.clone();
     let tracker = state.tracker.clone();
     let idle_timeout = state.idle_timeout;
-    let resumable = state.resume.clone().and_then(|registry| match ResumeRegistry::new_token() {
-        Ok(token) => Some((registry, token)),
-        Err(e) => {
-            tracing::warn!(error = %e, "no random source for a resume token; session not resumable");
-            None
-        }
-    });
+    let resumable = resumable_session(state);
     let header_token = resumable.as_ref().map(|(_, token)| token.clone());
-    let mut response = ws
+    let response = ws
         .max_message_size(state.max_message_bytes)
         .on_upgrade(move |socket| {
             tracker.track_future(async move {
@@ -228,7 +233,22 @@ fn serve_pool_session(
                 drop(spent_guard);
             })
         });
-    if let Some(token) = header_token
+    with_resume_header(response, header_token)
+}
+
+/// A resume token for a new session when the resume window is on.
+fn resumable_session(state: &AppState) -> Option<(Arc<ResumeRegistry>, String)> {
+    state.resume.clone().and_then(|registry| match ResumeRegistry::new_token() {
+        Ok(token) => Some((registry, token)),
+        Err(e) => {
+            tracing::warn!(error = %e, "no random source for a resume token; session not resumable");
+            None
+        }
+    })
+}
+
+fn with_resume_header(mut response: Response, token: Option<String>) -> Response {
+    if let Some(token) = token
         && let Ok(value) = HeaderValue::from_str(&token)
     {
         response.headers_mut().insert(RESUME_TOKEN_HEADER, value);
@@ -286,16 +306,49 @@ async fn seed_profile(pipe: &mut CdpPipe, payload: &ProfilePayload) -> Result<()
     Ok(())
 }
 
+/// Serves a profile session's client and returns the browser's pipe while the
+/// browser is still alive at the end; through the resume window when it is on.
+async fn serve_profile(
+    resumable: Option<&(Arc<ResumeRegistry>, String)>,
+    socket: WebSocket,
+    pipe: CdpPipe,
+    idle_timeout: Option<Duration>,
+    cancel: &CancellationToken,
+) -> Option<CdpPipe> {
+    if let Some((registry, resume_token)) = resumable {
+        return resume::serve(registry, resume_token, socket, pipe, idle_timeout, cancel).await;
+    }
+    tokio::select! {
+        r = bridge_reclaimable(socket, pipe, idle_timeout) => r,
+        () = cancel.cancelled() => None,
+    }
+}
+
+/// How a profile session ends: its hand-off token, shutdown signal, whether it
+/// saves, and its resume registry and token when the resume window is on.
+struct ProfileEnding {
+    token: String,
+    cancel: CancellationToken,
+    read_only: bool,
+    resumable: Option<(Arc<ResumeRegistry>, String)>,
+}
+
 /// Seeds, serves, and captures one profile session on its own fresh browser.
+/// With the resume window on, a broken connection holds the browser and the
+/// profile is captured once, when the session finally ends.
 async fn profile_session(
     state: Arc<AppState>,
     socket: WebSocket,
     mut session: ChromeSession,
     payload: ProfilePayload,
-    token: String,
-    cancel: CancellationToken,
-    read_only: bool,
+    ending: ProfileEnding,
 ) {
+    let ProfileEnding {
+        token,
+        cancel,
+        read_only,
+        resumable,
+    } = ending;
     let Some(mut pipe) = session.browser.take_pipe() else {
         state.profiles.finish_without_result(&token);
         state.factory.destroy(session).await;
@@ -323,21 +376,13 @@ async fn profile_session(
 
     // Read-only: serve, then tear down fast with NO capture — nothing is saved
     // back, which is what lets many sessions share one read-only profile.
+    let reclaimed = serve_profile(resumable.as_ref(), socket, pipe, idle_timeout, &cancel).await;
     if read_only {
-        tokio::select! {
-            () = bridge(socket, pipe, idle_timeout) => {}
-            () = cancel.cancelled() => {}
-        }
+        drop(reclaimed);
         state.profiles.finish_without_result(&token);
         state.factory.destroy(session).await;
         return;
     }
-
-    // Serve; reclaim the pipe if the CLIENT closed (browser still alive).
-    let reclaimed = tokio::select! {
-        r = bridge_reclaimable(socket, pipe, idle_timeout) => r,
-        () = cancel.cancelled() => None,
-    };
 
     // Capture cookies via CDP while the browser is alive (browser-level, no
     // attach). localStorage + IndexedDB are read from disk after the kill, which

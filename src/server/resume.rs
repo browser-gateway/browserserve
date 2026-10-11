@@ -83,8 +83,9 @@ impl ResumeRegistry {
 /// Serves a session that can be resumed: bridges the client; when the client's
 /// connection breaks, parks the browser for the registry's window, discarding
 /// everything the browser sends meanwhile; a client presenting the token gets
-/// the same browser. Returns when the session must be destroyed (browser gone,
-/// a deliberate close, idle timeout, window expired, or shutdown).
+/// the same browser. Returns when the session is over (a deliberate close, idle
+/// timeout, window expired, browser gone, or shutdown), with the browser's pipe
+/// when the browser is still running, so the caller can read state from it.
 pub async fn serve(
     registry: &ResumeRegistry,
     token: &str,
@@ -92,16 +93,18 @@ pub async fn serve(
     first_pipe: CdpPipe,
     idle_timeout: Option<Duration>,
     cancel: &CancellationToken,
-) {
+) -> Option<CdpPipe> {
     let mut socket = first_socket;
     let mut pipe = first_pipe;
     loop {
         let end = tokio::select! {
             end = bridge_session(socket, pipe, idle_timeout) => end,
-            () = cancel.cancelled() => return,
+            () = cancel.cancelled() => return None,
         };
-        let BridgeEnd::ClientGone(returned) = end else {
-            return;
+        let returned = match end {
+            BridgeEnd::ClientGone(returned) => returned,
+            BridgeEnd::ClientFinished(live) | BridgeEnd::IdleTimeout(live) => return Some(live),
+            BridgeEnd::BrowserGone => return None,
         };
 
         let (handoff, mut incoming) = mpsc::channel(1);
@@ -113,28 +116,38 @@ pub async fn serve(
         let (mut reader, writer) = returned.split();
         let deadline = tokio::time::sleep(registry.window);
         tokio::pin!(deadline);
-        let resumed = loop {
+        let waited = loop {
             tokio::select! {
-                next = incoming.recv() => break next,
-                () = &mut deadline => break None,
-                () = cancel.cancelled() => break None,
+                next = incoming.recv() => break next.map_or(Parked::Expired, |socket| Parked::Resumed(Box::new(socket))),
+                () = &mut deadline => break Parked::Expired,
+                () = cancel.cancelled() => break Parked::Gone,
                 frame = reader.recv_raw() => {
                     if frame.is_err() {
-                        break None;
+                        break Parked::Gone;
                     }
                 }
             }
         };
         registry.unpark(token);
-        let Some(next_socket) = resumed else {
-            tracing::info!("resume window ended without a client; destroying session");
-            return;
+        let next_socket = match waited {
+            Parked::Resumed(next_socket) => *next_socket,
+            Parked::Expired => {
+                tracing::info!("resume window ended without a client; ending session");
+                return Some(CdpPipe::from_halves(reader, writer));
+            }
+            Parked::Gone => return None,
         };
         pipe = CdpPipe::from_halves(reader, writer);
         clean_slate(&mut pipe).await;
         tracing::info!("session resumed");
         socket = next_socket;
     }
+}
+
+enum Parked {
+    Resumed(Box<WebSocket>),
+    Expired,
+    Gone,
 }
 
 /// Best effort: detach the previous client's page sessions and switch off the
