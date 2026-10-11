@@ -4,6 +4,11 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- A profile session that ran longer than two minutes could lose everything it should have saved: the store that hands profiles between the gateway and the browser expired the record of a session still in progress once any other profile session came or went, so the capture at the end was dropped and the gateway kept the old profile. Running sessions now keep their record for as long as they last; sessions that end without a capture (read-only, refused, browser gone) release theirs.
+
 ## [0.1.19] - 2026-10-09
 
 ### Fixed

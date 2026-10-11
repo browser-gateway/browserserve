@@ -297,6 +297,7 @@ async fn profile_session(
     read_only: bool,
 ) {
     let Some(mut pipe) = session.browser.take_pipe() else {
+        state.profiles.finish_without_result(&token);
         state.factory.destroy(session).await;
         return;
     };
@@ -313,6 +314,7 @@ async fn profile_session(
                 reason: Utf8Bytes::from_static("profile could not be loaded; connect again"),
             })))
             .await;
+        state.profiles.finish_without_result(&token);
         state.factory.destroy(session).await;
         return;
     }
@@ -326,6 +328,7 @@ async fn profile_session(
             () = bridge(socket, pipe, idle_timeout) => {}
             () = cancel.cancelled() => {}
         }
+        state.profiles.finish_without_result(&token);
         state.factory.destroy(session).await;
         return;
     }
@@ -365,6 +368,8 @@ async fn profile_session(
         captured.indexeddb = native.indexeddb;
         captured.local_storage = native.local_storage;
         state.profiles.deposit_result(&token, captured);
+    } else {
+        state.profiles.finish_without_result(&token);
     }
 }
 

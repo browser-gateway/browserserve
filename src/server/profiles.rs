@@ -22,6 +22,10 @@ const TOKEN_BYTES: usize = 32;
 /// How long a dropped-off or captured profile lives before it is swept.
 pub const PROFILE_TTL: Duration = Duration::from_mins(2);
 
+/// Backstop for a claimed profile whose session never reports back. A running
+/// session keeps its entry however long it lasts; this only bounds a leak.
+pub const IN_FLIGHT_MAX_AGE: Duration = Duration::from_hours(24);
+
 /// Cap on outstanding profile entries (drop-off backpressure).
 pub const MAX_PENDING: usize = 256;
 
@@ -146,9 +150,33 @@ impl ProfileStore {
         }
     }
 
+    /// Forgets a claimed profile whose session ended without a capture to hand back.
+    pub fn finish_without_result(&self, token: &str) {
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(
+            map.get(token),
+            Some(Entry {
+                slot: Slot::InFlight,
+                ..
+            })
+        ) {
+            map.remove(token);
+        }
+    }
+
     fn sweep(&self, map: &mut HashMap<String, Entry>) {
         let ttl = self.ttl;
-        map.retain(|_, entry| entry.at.elapsed() < ttl);
+        map.retain(|_, entry| {
+            let limit = if matches!(entry.slot, Slot::InFlight) {
+                IN_FLIGHT_MAX_AGE
+            } else {
+                ttl
+            };
+            entry.at.elapsed() < limit
+        });
     }
 }
 
@@ -199,6 +227,37 @@ mod tests {
         assert_eq!(t.len(), 43);
         assert!(!t.contains(['+', '/', '=']));
         assert_ne!(t, s.drop_off(payload("b")).unwrap(), "tokens differ");
+    }
+
+    #[test]
+    fn a_session_longer_than_the_ttl_still_returns_its_profile() {
+        let s = ProfileStore::new(Duration::from_millis(50), 100);
+        let token = s.drop_off(payload("long")).unwrap();
+        let _ = s.claim(&token).expect("claim pending");
+        std::thread::sleep(Duration::from_millis(80));
+        let other = s.drop_off(payload("other")).unwrap();
+        let _ = s.claim(&other);
+        s.deposit_result(&token, payload("captured"));
+        let picked = s
+            .pick_up(&token)
+            .expect("a long session's capture is still picked up");
+        assert_eq!(picked.cookies[0].name, "captured");
+    }
+
+    #[test]
+    fn a_session_without_a_capture_frees_its_entry() {
+        let s = ProfileStore::new(Duration::from_mins(1), 1);
+        let token = s.drop_off(payload("ro")).unwrap();
+        let _ = s.claim(&token).expect("claim pending");
+        assert!(
+            s.drop_off(payload("next")).is_none(),
+            "the running session holds the only slot"
+        );
+        s.finish_without_result(&token);
+        assert!(
+            s.drop_off(payload("next")).is_some(),
+            "the slot is free once the session ends"
+        );
     }
 
     #[test]
