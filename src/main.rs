@@ -103,12 +103,14 @@ async fn run_check(
         .map_err(|e| format!("provision session dir: {e}"))?;
     println!("user data dir  {}", dirs.user_data_dir.display());
 
+    let extra_flags =
+        chrome::flags::launch_extra_flags(cfg.chrome.stealth, &executable, &cfg.chrome.extra_flags);
     let mk_spec = |no_sandbox: bool| LaunchSpec {
         executable: &executable,
         user_data_dir: &dirs.user_data_dir,
         no_sandbox,
         disable_dev_shm: chrome::flags::small_dev_shm(),
-        extra_flags: &cfg.chrome.extra_flags,
+        extra_flags: &extra_flags,
         launch_timeout: Duration::from_millis(cfg.chrome.launch_timeout_ms),
         max_frame_bytes: cfg.chrome.max_frame_bytes,
         cgroup_leaf: None,

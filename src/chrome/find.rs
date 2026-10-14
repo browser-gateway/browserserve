@@ -1,6 +1,9 @@
 //! Chrome/Chromium executable discovery.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Errors from executable discovery.
@@ -52,6 +55,46 @@ pub fn find_chrome(explicit: Option<&Path>) -> Result<PathBuf, FindError> {
     })
 }
 
+/// How long `--version` may take before the probe gives up.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The browser's major version, read from `<executable> --version`
+/// (e.g. `Google Chrome for Testing 154.0.8037.92` gives 154). `None` when the
+/// browser cannot be run, does not answer in time, or prints no version.
+#[must_use]
+pub fn browser_major_version(executable: &Path) -> Option<u32> {
+    let mut child = Command::new(executable)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + VERSION_PROBE_TIMEOUT;
+    while child.try_wait().ok()?.is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut out = String::new();
+    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    parse_major_version(&out)
+}
+
+/// The major version in a `--version` line: the first whitespace-separated
+/// token shaped like `154.0.8037.92`.
+fn parse_major_version(output: &str) -> Option<u32> {
+    output.split_whitespace().find_map(|token| {
+        let mut parts = token.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let rest: Vec<&str> = parts.collect();
+        (rest.len() == 3 && rest.iter().all(|p| p.parse::<u32>().is_ok())).then_some(major)
+    })
+}
+
 // macOS is a development convenience only; the product runs in the Linux image.
 #[cfg(target_os = "macos")]
 fn candidates() -> Vec<PathBuf> {
@@ -90,6 +133,38 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn major_version_parses_known_version_lines() {
+        for (line, major) in [
+            ("Google Chrome for Testing 154.0.8037.92 \n", Some(154)),
+            ("Chromium 141.0.7390.37 ", Some(141)),
+            ("Google Chrome 155.0.8059.79 unknown\n", Some(155)),
+            ("Chromium 1.2.3 snap", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_major_version(line), major, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn major_version_is_none_for_a_missing_browser() {
+        assert_eq!(
+            browser_major_version(Path::new("/nonexistent/chrome")),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn major_version_reads_the_browser_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fake-chrome");
+        std::fs::write(&path, b"#!/bin/sh\necho 'Chromium 150.0.1.2'\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(browser_major_version(&path), Some(150));
+    }
 
     #[test]
     fn explicit_missing_path_is_rejected() {

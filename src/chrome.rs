@@ -8,7 +8,7 @@ pub mod launch;
 pub mod pipe;
 
 pub use client::{CdpClient, CdpError};
-pub use find::{FindError, find_chrome};
+pub use find::{FindError, browser_major_version, find_chrome};
 pub use kill::{TeardownReport, force_kill_group, teardown};
 pub use launch::{Browser, BrowserVersion, LaunchError, LaunchSpec, launch};
 pub use pipe::{CdpPipe, CdpReader, CdpWriter, PipeError};

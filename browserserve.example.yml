@@ -30,6 +30,7 @@ chrome:
   transport: pipe          # CDP transport; only "pipe" is supported today
   noSandbox: false         # keep the Chromium sandbox on; see docker/seccomp.json
   requireSandbox: false    # true = refuse sessions if the host blocks the sandbox (no --no-sandbox fallback)
+  stealth: true            # hide navigator.webdriver, the HeadlessChrome user agent and the 800x600 headless screen (bot checks such as Cloudflare Turnstile fail on them). Env: BROWSERSERVE_STEALTH
   extraFlags: []           # appended after the built-in flag set
   launchTimeoutMs: 30000   # budget for a browser to become CDP-ready
   maxFrameBytes: 268435456 # cap on a single CDP message

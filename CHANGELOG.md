@@ -4,6 +4,11 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Cloudflare Turnstile failed every session ("Verification failed" after the click, never a token): the browser showed itself as automated. `navigator.webdriver` was `true` because CDP runs over a pipe, the user agent and `Sec-CH-UA` said `HeadlessChrome`, and the screen was 800x600 around a 1280x720 window. Browsers now launch with `--disable-blink-features=AutomationControlled`, the stock `Chrome/<major>.0.0.0` user agent for the installed browser, and a 1920x1080 screen. On by default; `chrome.stealth: false` (`BROWSERSERVE_STEALTH=0`) restores the old launch. A `--user-agent` or `--screen-info` in `chrome.extraFlags` takes precedence, and a `--disable-blink-features` there is merged rather than replacing the built-in one.
+
 ## [0.1.20] - 2026-10-11
 
 ### Added

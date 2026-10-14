@@ -159,6 +159,11 @@ pub struct ChromeConfig {
     /// Require Chromium's sandbox: refuse to serve sessions rather than fall back
     /// to `--no-sandbox` when the host blocks it. Off by default (auto-fallback).
     pub require_sandbox: bool,
+    /// Hide the signals that mark the browser as headless and automated
+    /// (`navigator.webdriver`, the `HeadlessChrome` user agent, the 800x600
+    /// headless screen), which bot checks such as Cloudflare Turnstile reject.
+    /// On by default.
+    pub stealth: bool,
     /// Extra flags appended after the built-in set.
     pub extra_flags: Vec<String>,
     /// Time budget for a launched Chrome to become CDP-ready, in milliseconds.
@@ -174,6 +179,7 @@ impl Default for ChromeConfig {
             transport: Transport::Pipe,
             no_sandbox: false,
             require_sandbox: false,
+            stealth: true,
             extra_flags: Vec::new(),
             launch_timeout_ms: 30_000,
             max_frame_bytes: 256 * 1024 * 1024,
@@ -246,7 +252,7 @@ fn is_truthy(value: &str) -> bool {
 /// Parses YAML (may be `None` or empty) and applies environment overrides.
 ///
 /// Recognized environment keys: `PORT`, `HOST`, `BROWSERSERVE_TOKEN`, `BROWSERSERVE_CHROME_PATH`,
-/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_NO_SANDBOX`,
+/// `BROWSERSERVE_DATA_DIR`, `BROWSERSERVE_REQUIRE_SANDBOX`, `BROWSERSERVE_NO_SANDBOX`, `BROWSERSERVE_STEALTH`,
 /// `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`,
 /// `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`,
 /// `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`,
@@ -405,6 +411,9 @@ fn apply_switches<S: std::hash::BuildHasher>(
     if let Some(value) = env.get("BROWSERSERVE_NO_SANDBOX") {
         config.chrome.no_sandbox = is_truthy(value);
     }
+    if let Some(value) = env.get("BROWSERSERVE_STEALTH") {
+        config.chrome.stealth = is_truthy(value);
+    }
     if let Some(value) = env.get("BROWSERSERVE_CALIBRATE") {
         config.pool.calibrate = is_truthy(value);
     }
@@ -513,6 +522,15 @@ dataDir: /var/lib/bgr
     fn require_sandbox_defaults_off() {
         let loaded = load(None, &HashMap::new()).unwrap();
         assert!(!loaded.config.chrome.require_sandbox);
+    }
+
+    #[test]
+    fn stealth_is_on_by_default_and_env_can_turn_it_off() {
+        assert!(load(None, &env(&[])).unwrap().config.chrome.stealth);
+        let loaded = load(None, &env(&[("BROWSERSERVE_STEALTH", "0")])).unwrap();
+        assert!(!loaded.config.chrome.stealth);
+        let loaded = load(Some("chrome:\n  stealth: false\n"), &env(&[])).unwrap();
+        assert!(!loaded.config.chrome.stealth);
     }
 
     #[test]

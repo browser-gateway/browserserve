@@ -78,6 +78,75 @@ pub fn small_dev_shm() -> bool {
     }
 }
 
+/// Screen size reported to pages by a headless browser in stealth mode. Without
+/// it, headless Chrome reports an 800x600 screen holding a larger window, which
+/// no real device does.
+const STEALTH_SCREEN: &str = "--screen-info={1920x1080}";
+
+/// The user agent of a stock Chrome of `major` on this platform, in the reduced
+/// form Chrome itself sends (`Chrome/<major>.0.0.0`).
+#[must_use]
+pub fn stock_user_agent(major: u32) -> String {
+    #[cfg(target_os = "macos")]
+    let platform = "Macintosh; Intel Mac OS X 10_15_7";
+    #[cfg(not(target_os = "macos"))]
+    let platform = "X11; Linux x86_64";
+    format!(
+        "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+}
+
+/// Flags that stop pages from telling a headless, CDP-driven browser apart
+/// from a person's Chrome. Bot checks such as Cloudflare Turnstile fail a
+/// session on these signals:
+///
+/// - `navigator.webdriver` is `true` whenever CDP runs over a pipe;
+///   `--disable-blink-features=AutomationControlled` turns it off.
+/// - The default headless user agent says `HeadlessChrome`; `--user-agent`
+///   replaces it with the stock one for `major` (skipped when the version is
+///   unknown).
+/// - The headless screen is 800x600 inside a 1280x720 window.
+///
+/// A flag the operator already sets in `extra` is left to them: no
+/// `--user-agent` or `--screen-info` is added next to theirs, and
+/// `--disable-blink-features` values are merged by [`build_flags`].
+#[must_use]
+pub fn stealth_flags(major: Option<u32>, extra: &[String]) -> Vec<String> {
+    let user_sets = |prefix: &str| extra.iter().any(|f| f.starts_with(prefix));
+    let mut flags = vec![String::from(
+        "--disable-blink-features=AutomationControlled",
+    )];
+    if let Some(major) = major
+        && !user_sets("--user-agent=")
+    {
+        flags.push(format!("--user-agent={}", stock_user_agent(major)));
+    }
+    if !user_sets("--screen-info=") {
+        flags.push(String::from(STEALTH_SCREEN));
+    }
+    flags
+}
+
+/// The extra flags every launch gets: the [`stealth_flags`] when `stealth` is
+/// on (the browser's version is read from `executable` once, here), then the
+/// operator's own `extra`.
+#[must_use]
+pub fn launch_extra_flags(stealth: bool, executable: &Path, extra: &[String]) -> Vec<String> {
+    if !stealth {
+        return extra.to_vec();
+    }
+    let major = crate::chrome::browser_major_version(executable);
+    if major.is_none() {
+        tracing::warn!(
+            executable = %executable.display(),
+            "stealth: could not read the browser version; keeping its default user agent, which says HeadlessChrome"
+        );
+    }
+    let mut flags = stealth_flags(major, extra);
+    flags.extend_from_slice(extra);
+    flags
+}
+
 /// Inputs for assembling the final argument list.
 #[derive(Debug)]
 pub struct FlagOptions<'a> {
@@ -97,7 +166,11 @@ pub struct FlagOptions<'a> {
 /// (`base/command_line.cc`: `AppendSwitchNative` is a plain map assignment).
 /// A user-supplied flag for one of these must be merged with our default,
 /// never appended as a second, silently-overriding occurrence.
-const MERGEABLE_FEATURE_SWITCHES: &[&str] = &["--disable-features=", "--enable-features="];
+const MERGEABLE_FEATURE_SWITCHES: &[&str] = &[
+    "--disable-features=",
+    "--enable-features=",
+    "--disable-blink-features=",
+];
 
 /// Merges any `extra` occurrence of a [`MERGEABLE_FEATURE_SWITCHES`] prefix
 /// into `DEFAULT_FLAGS`'s own value for that switch (comma-joined, deduped,
@@ -294,6 +367,66 @@ mod tests {
             "exactly one --enable-features flag must be emitted, got {enable_features_flags:?}"
         );
         assert!(enable_features_flags[0].contains("SomeUserFeature"));
+    }
+
+    #[test]
+    fn stealth_hides_webdriver_headless_ua_and_screen() {
+        let flags = stealth_flags(Some(154), &[]);
+        assert!(flags.contains(&String::from(
+            "--disable-blink-features=AutomationControlled"
+        )));
+        let ua = flags
+            .iter()
+            .find_map(|f| f.strip_prefix("--user-agent="))
+            .expect("a user agent is set when the version is known");
+        assert!(ua.contains(" Chrome/154.0.0.0 "), "{ua}");
+        assert!(!ua.contains("Headless"), "{ua}");
+        assert!(flags.iter().any(|f| f.starts_with("--screen-info=")));
+    }
+
+    #[test]
+    fn stealth_without_a_version_keeps_the_default_user_agent() {
+        let flags = stealth_flags(None, &[]);
+        assert!(!flags.iter().any(|f| f.starts_with("--user-agent=")));
+        assert!(
+            flags
+                .iter()
+                .any(|f| f.starts_with("--disable-blink-features="))
+        );
+    }
+
+    #[test]
+    fn stealth_leaves_operator_user_agent_and_screen_alone() {
+        let extra = vec![
+            String::from("--user-agent=Custom/1.0"),
+            String::from("--screen-info={1280x800}"),
+        ];
+        let flags = stealth_flags(Some(154), &extra);
+        assert!(!flags.iter().any(|f| f.starts_with("--user-agent=")));
+        assert!(!flags.iter().any(|f| f.starts_with("--screen-info=")));
+    }
+
+    #[test]
+    fn stealth_off_passes_extra_through() {
+        let extra = vec![String::from("--lang=de")];
+        assert_eq!(
+            launch_extra_flags(false, Path::new("/nonexistent/chrome"), &extra),
+            extra
+        );
+    }
+
+    #[test]
+    fn user_disable_blink_features_merges_with_stealth() {
+        let mut extra = stealth_flags(Some(154), &[]);
+        extra.push(String::from("--disable-blink-features=SomeBlinkFeature"));
+        let flags = flags_for(false, &extra);
+        let blink: Vec<&String> = flags
+            .iter()
+            .filter(|f| f.starts_with("--disable-blink-features="))
+            .collect();
+        assert_eq!(blink.len(), 1, "{blink:?}");
+        assert!(blink[0].contains("AutomationControlled"));
+        assert!(blink[0].contains("SomeBlinkFeature"));
     }
 
     #[test]
