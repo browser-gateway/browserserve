@@ -1,0 +1,3 @@
+[advisories]
+# unsafe-libyaml (via serde_yaml_ng) is unmaintained, not vulnerable; it only parses the operator config file.
+ignore = ["RUSTSEC-2024-0449"]

@@ -4,13 +4,16 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.21] - 2026-10-14
+## [0.1.21] - 2026-10-15
 
 ### Fixed
 - Cloudflare Turnstile failed every session: the click ended in "Verification failed" and no token was issued, even with the sandbox on and a clean IP. The browser told every page it was automated. `navigator.webdriver` was `true` (Chrome sets it whenever CDP runs over a pipe), the user agent said `HeadlessChrome`, and the screen was 800x600 around a 1280x720 window. Browsers now launch with `navigator.webdriver` off, the stock `Chrome/<major>.0.0.0` user agent of the installed browser, and a 1920x1080 screen, and Turnstile passes. The version is read once from the browser at startup, so the user agent follows a Chrome upgrade.
 
+### Security
+- Updated `ruzstd` to 0.9.1 (RUSTSEC-2026-0344): a crafted compressed localStorage value could exhaust memory while a profile was saved.
+
 ### Added
-- `chrome.stealth` (env `BROWSERSERVE_STEALTH`), on by default, controls the launch above. Set it to `false` to launch browsers as before. A `--user-agent` or `--screen-info` in `chrome.extraFlags` takes precedence over the built-in one, and a `--disable-blink-features` there is merged with the built-in one instead of replacing it. Stealth does not change the IP address: a site that scores datacenter addresses harshly can still show the checkbox, or block, without a residential proxy.
+- `chrome.stealth` (env `BROWSERSERVE_STEALTH`), on by default, controls the launch above. Set it to `false` to launch browsers as before. A `--user-agent` or `--screen-info` in `chrome.extraFlags` takes precedence over the built-in one, and a `--disable-blink-features` there is merged with the built-in one instead of replacing it. Stealth does not change the IP address: a site that scores datacenter addresses harshly can still show the checkbox, or block, without a residential proxy. Stealth covers the browser only: a client library that leaves its own automation traces in the page (Playwright `connectOverCDP` does inside the Turnstile frame) can still be caught; raw CDP and Puppeteer clients pass.
 
 ## [0.1.20] - 2026-10-11
 

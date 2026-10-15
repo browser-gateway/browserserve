@@ -1,5 +1,8 @@
 [advisories]
 yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, not vulnerable; it only parses the operator's own config file at startup, never client input" },
+]
 
 [licenses]
 allow = [
