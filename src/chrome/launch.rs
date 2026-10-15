@@ -261,6 +261,9 @@ pub(crate) fn browser_command(executable: &Path, cgroup_leaf: Option<&Path>) -> 
 /// ([`LaunchError::ChromeExited`], [`LaunchError::StartupPipe`],
 /// [`LaunchError::ReadyTimeout`]) carry the browser's stderr tail.
 pub async fn launch(spec: &LaunchSpec<'_>) -> Result<Browser, LaunchError> {
+    if let Err(err) = crate::chrome::prefs::apply_launch_prefs(spec.user_data_dir).await {
+        tracing::warn!(error = %err, "could not write launch preferences; the leaked-password check stays on");
+    }
     let (browser_cmd_read, cmd_write) = cloexec_pipe().map_err(LaunchError::Pipes)?;
     let (out_read, browser_out_write) = cloexec_pipe().map_err(LaunchError::Pipes)?;
 

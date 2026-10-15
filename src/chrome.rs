@@ -6,6 +6,7 @@ pub mod flags;
 pub mod kill;
 pub mod launch;
 pub mod pipe;
+pub mod prefs;
 
 pub use client::{CdpClient, CdpError};
 pub use find::{FindError, browser_major_version, find_chrome};

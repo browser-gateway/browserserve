@@ -4,6 +4,11 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- A tab froze for good after a person typed a known-leaked password into a login form: Chrome's leaked-password check opened a browser-level dialog that a headless page cannot show or dismiss, and it swallowed all input to the tab. Browsers now launch with that check off (`profile.password_manager_leak_detection` is set to `false` in the profile's preferences before every launch; other preferences are kept).
+
 ## [0.1.21] - 2026-10-15
 
 ### Fixed
