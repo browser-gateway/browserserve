@@ -4,7 +4,7 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.22] - 2026-10-15
 
 ### Fixed
 - A tab froze for good after a person typed a known-leaked password into a login form: Chrome's leaked-password check opened a browser-level dialog that a headless page cannot show or dismiss, and it swallowed all input to the tab. Browsers now launch with that check off (`profile.password_manager_leak_detection` is set to `false` in the profile's preferences before every launch; other preferences are kept).
@@ -12,7 +12,7 @@ All notable changes to browserserve are documented here. The format is based on
 ## [0.1.21] - 2026-10-15
 
 ### Fixed
-- Bot-check widgets failed every session: the click ended in a verification failure and no token was issued, even with the sandbox on and a clean IP. The browser told every page it was automated. `navigator.webdriver` was `true` (Chrome sets it whenever CDP runs over a pipe), the user agent said `HeadlessChrome`, and the screen was 800x600 around a 1280x720 window. Browsers now launch with `navigator.webdriver` off, the stock `Chrome/<major>.0.0.0` user agent of the installed browser, and a 1920x1080 screen, and these checks pass. The version is read once from the browser at startup, so the user agent follows a Chrome upgrade.
+- The browser told every page it was automated. `navigator.webdriver` was `true` (Chrome sets it whenever CDP runs over a pipe), the user agent said `HeadlessChrome`, and the screen was 800x600 around a 1280x720 window. Browsers now launch with `navigator.webdriver` off, the stock `Chrome/<major>.0.0.0` user agent of the installed browser, and a 1920x1080 screen. The version is read once from the browser at startup, so the user agent follows a Chrome upgrade.
 
 ### Security
 - Updated `ruzstd` to 0.9.1 (RUSTSEC-2026-0344): a crafted compressed localStorage value could exhaust memory while a profile was saved.
