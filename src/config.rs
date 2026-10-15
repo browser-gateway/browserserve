@@ -161,7 +161,7 @@ pub struct ChromeConfig {
     pub require_sandbox: bool,
     /// Hide the signals that mark the browser as headless and automated
     /// (`navigator.webdriver`, the `HeadlessChrome` user agent, the 800x600
-    /// headless screen), which bot checks such as Cloudflare Turnstile reject.
+    /// headless screen), which bot checks reject.
     /// On by default.
     pub stealth: bool,
     /// Extra flags appended after the built-in set.

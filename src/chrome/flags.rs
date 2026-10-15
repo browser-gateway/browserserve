@@ -97,8 +97,7 @@ pub fn stock_user_agent(major: u32) -> String {
 }
 
 /// Flags that stop pages from telling a headless, CDP-driven browser apart
-/// from a person's Chrome. Bot checks such as Cloudflare Turnstile fail a
-/// session on these signals:
+/// from a person's Chrome. Bot checks fail a session on these signals:
 ///
 /// - `navigator.webdriver` is `true` whenever CDP runs over a pipe;
 ///   `--disable-blink-features=AutomationControlled` turns it off.
