@@ -2,6 +2,9 @@
 //   cargo build --release && cd e2e && npm install && npx tsx session-proxy.ts
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { createServer as createTlsServer } from "node:tls";
 import { createServer, request, type IncomingMessage } from "node:http";
 import { connect as tcpConnect, createServer as createTcpServer, type Socket } from "node:net";
 import { resolve } from "node:path";
@@ -56,6 +59,26 @@ httpProxy.on("connect", (req: IncomingMessage, client: Socket, head: Buffer) => 
   client.on("error", () => up.destroy());
 });
 const httpProxyPort = await listen(httpProxy);
+
+// An https proxy: TLS in front of the http proxy above, certificate signed by a
+// throwaway authority that only one browserserve below is told to trust.
+const certDir = mkdtempSync(`${tmpdir()}/bs-proxy-tls-`);
+const ssl = (args: string[]) => execFileSync("openssl", args, { cwd: certDir, stdio: "ignore" });
+ssl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "1", "-subj", "/CN=test-ca"]);
+ssl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", "proxy.key", "-out", "proxy.csr", "-subj", "/CN=localhost"]);
+writeFileSync(`${certDir}/san.ext`, "subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\n");
+ssl(["x509", "-req", "-in", "proxy.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "proxy.pem", "-days", "1", "-extfile", "san.ext"]);
+const tlsProxy = createTlsServer(
+  { key: readFileSync(`${certDir}/proxy.key`), cert: readFileSync(`${certDir}/proxy.pem`) },
+  (secure) => {
+    const plain = tcpConnect(httpProxyPort, "127.0.0.1");
+    secure.pipe(plain);
+    plain.pipe(secure);
+    plain.on("error", () => secure.destroy());
+    secure.on("error", () => plain.destroy());
+  },
+);
+const tlsProxyPort = await listen(tlsProxy);
 
 const socksSeen: string[] = [];
 const socksProxy = createTcpServer((s) => {
@@ -230,6 +253,23 @@ try {
   off.proc.kill("SIGTERM");
 }
 
+const trusting = await start(19335, { SSL_CERT_FILE: `${certDir}/ca.pem` });
+try {
+  const httpsProxyUrl = `https://${enc(USER)}:${enc(PASS)}@localhost:${tlsProxyPort}`;
+  seen.length = 0;
+  const viaTls = await visit(trusting.port, httpsProxyUrl, "https://en.wikipedia.org/wiki/Proxy_server");
+  check("an https proxy with a login carries the session over TLS", viaTls.includes("proxy") && seen.includes("CONNECT en.wikipedia.org:443 auth=true"), seen.join(", "));
+} finally {
+  trusting.proc.kill("SIGTERM");
+}
+const untrusting = await start(19336);
+try {
+  const viaUntrusted = await visit(untrusting.port, `https://${enc(USER)}:${enc(PASS)}@localhost:${tlsProxyPort}`, "https://en.wikipedia.org/wiki/Proxy_server");
+  check("an https proxy whose certificate is not trusted is refused", viaUntrusted.startsWith("error:net::ERR_TUNNEL_CONNECTION_FAILED"), viaUntrusted);
+} finally {
+  untrusting.proc.kill("SIGTERM");
+}
+
 const strict = await start(19333, { BROWSERSERVE_PROXY_ALLOW_PRIVATE: "0" });
 try {
   const refused = await upgrade(strict.port, { "Browserserve-Proxy": `http://127.0.0.1:${httpProxyPort}` });
@@ -240,6 +280,7 @@ try {
 
 target.close();
 httpProxy.close();
+tlsProxy.close();
 socksProxy.close();
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -11,7 +11,7 @@ pub enum ProxyScheme {
     Http,
     /// HTTP proxy reached over TLS.
     Https,
-    /// SOCKS5, the proxy resolves target host names.
+    /// SOCKS5 (`socks5://` or `socks5h://`); the proxy always resolves target host names.
     Socks5,
 }
 
@@ -36,8 +36,8 @@ impl ProxyScheme {
 /// Why a proxy address was refused.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum UpstreamParseError {
-    /// The address does not start with `http://`, `https://` or `socks5://`.
-    #[error("proxy address must start with http://, https:// or socks5://")]
+    /// The address does not start with `http://`, `https://`, `socks5://` or `socks5h://`.
+    #[error("proxy address must start with http://, https://, socks5:// or socks5h://")]
     Scheme,
     /// Host or port missing or malformed.
     #[error("proxy address has no valid host and port")]
@@ -73,7 +73,9 @@ impl ProxyUpstream {
             (ProxyScheme::Http, r)
         } else if let Some(r) = strip_prefix_ci(raw, "https://") {
             (ProxyScheme::Https, r)
-        } else if let Some(r) = strip_prefix_ci(raw, "socks5://") {
+        } else if let Some(r) =
+            strip_prefix_ci(raw, "socks5://").or_else(|| strip_prefix_ci(raw, "socks5h://"))
+        {
             (ProxyScheme::Socks5, r)
         } else {
             return Err(UpstreamParseError::Scheme);
@@ -279,6 +281,8 @@ mod tests {
             (ProxyScheme::Socks5, "2001:db8::1", 1081)
         );
         assert_eq!(p.to_string(), "socks5://[2001:db8::1]:1081");
+        let p = ProxyUpstream::parse("socks5h://u:p@h.example.com").unwrap();
+        assert_eq!((p.scheme(), p.port()), (ProxyScheme::Socks5, 1080));
     }
 
     #[test]
