@@ -21,6 +21,7 @@ pub mod logging;
 pub mod pool;
 pub mod pressure;
 pub mod profile;
+pub mod proxy;
 pub mod rss;
 pub mod server;
 pub mod session_dirs;
