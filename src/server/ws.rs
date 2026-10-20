@@ -22,6 +22,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Request header carrying the upstream proxy URL for one session. Never
+/// logged; sent as a header so it stays out of request-line access logs.
+pub const PROXY_HEADER: &str = "browserserve-proxy";
+/// Response header confirming the session's browser runs through the
+/// requested proxy. A client that asked for a proxy must refuse a session
+/// whose upgrade response lacks it.
+pub const PROXY_APPLIED_HEADER: &str = "browserserve-proxy-applied";
+
 const CLOSE_RESUME_EXPIRED: u16 = 1011;
 const CLOSE_PROFILE_NOT_LOADED: u16 = 1011;
 
@@ -90,6 +98,11 @@ pub async fn ws_handler(
         return resume_session(&state, &token, ws);
     }
 
+    let proxy = match requested_proxy(&state, &headers) {
+        Ok(proxy) => proxy,
+        Err(refused) => return *refused,
+    };
+
     let (cpu, memory) = state.gauge.snapshot();
     if cpu > state.pressure.max_cpu_percent {
         return reject(
@@ -132,52 +145,29 @@ pub async fn ws_handler(
         Err(refused) => return *refused,
     };
 
-    // Profile session: claim the dropped-off profile, launch a fresh browser
-    // with its native layer already on disk, inject the portable core, serve,
-    // then capture back. Bypasses the warm pool (a warm browser is already
-    // launched, so its user-data-dir cannot be seeded before start).
+    let relay = match proxy {
+        Some((upstream, options)) => match crate::proxy::Relay::start(upstream, options).await {
+            Ok(relay) => Some(relay),
+            Err(e) => return proxy_start_refused(&e),
+        },
+        None => None,
+    };
+    let proxied = relay.is_some();
+
     if let Some(token) = query.get("profileToken").cloned() {
-        let Some(payload) = state.profiles.claim(&token) else {
-            return reject(
-                StatusCode::NOT_FOUND,
-                "unknown_profile_token",
-                "no pending profile for this token",
-            );
-        };
-        let session = match state.factory.create_seeded(&payload.indexeddb).await {
-            Ok(session) => session,
-            Err(e) => return reject(StatusCode::SERVICE_UNAVAILABLE, "launch_failed", &e),
-        };
-        // Read-only: seed the profile but skip capture on close (faster
-        // teardown; the gateway also skips the lock, so many sessions can share
-        // one read-only profile at once).
-        let read_only = query
-            .get("readOnly")
-            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
-        let cancel = state.cancel.clone();
-        let tracker = state.tracker.clone();
-        let max = state.max_message_bytes;
-        let resumable = resumable_session(&state);
-        let header_token = resumable
-            .as_ref()
-            .map(|(_, resume_token)| resume_token.clone());
-        let state = Arc::clone(&state);
-        let response = ws.max_message_size(max).on_upgrade(move |socket| {
-            tracker.track_future(async move {
-                let ending = ProfileEnding {
-                    token,
-                    cancel,
-                    read_only,
-                    resumable,
-                };
-                profile_session(state, socket, session, payload, ending).await;
-                drop(spent_guard);
-            })
-        });
-        return with_resume_header(response, header_token);
+        return serve_profile_session(state, &query, ws, token, relay, spent_guard).await;
     }
 
-    let mut claimed = match state.pool.claim().await {
+    let claim = match relay {
+        Some(relay) => {
+            state
+                .pool
+                .claim_with(state.factory.create_proxied(relay))
+                .await
+        }
+        None => state.pool.claim().await,
+    };
+    let mut claimed = match claim {
         Ok(claimed) => claimed,
         Err(e) => {
             let (status, reason) = claim_status(&e);
@@ -195,7 +185,113 @@ pub async fn ws_handler(
         );
     };
 
-    serve_pool_session(&state, ws, claimed, pipe, spent_guard)
+    with_proxy_applied(
+        serve_pool_session(&state, ws, claimed, pipe, spent_guard),
+        proxied,
+    )
+}
+
+/// Profile session: claim the dropped-off profile, launch a fresh browser with
+/// its native layer already on disk, inject the portable core, serve, then
+/// capture back. Bypasses the warm pool: a warm browser is already launched,
+/// so its user-data-dir cannot be seeded before start.
+async fn serve_profile_session(
+    state: Arc<AppState>,
+    query: &QueryMap,
+    ws: WebSocketUpgrade,
+    token: String,
+    relay: Option<crate::proxy::Relay>,
+    spent_guard: Option<SpentGuard>,
+) -> Response {
+    let proxied = relay.is_some();
+    let Some(payload) = state.profiles.claim(&token) else {
+        return reject(
+            StatusCode::NOT_FOUND,
+            "unknown_profile_token",
+            "no pending profile for this token",
+        );
+    };
+    let session = match state.factory.create_seeded(&payload.indexeddb, relay).await {
+        Ok(session) => session,
+        Err(e) => return reject(StatusCode::SERVICE_UNAVAILABLE, "launch_failed", &e),
+    };
+    // Read-only: seed the profile but skip capture on close (faster
+    // teardown; the gateway also skips the lock, so many sessions can share
+    // one read-only profile at once).
+    let read_only = query
+        .get("readOnly")
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
+    let cancel = state.cancel.clone();
+    let tracker = state.tracker.clone();
+    let max = state.max_message_bytes;
+    let resumable = resumable_session(&state);
+    let header_token = resumable
+        .as_ref()
+        .map(|(_, resume_token)| resume_token.clone());
+    let state = Arc::clone(&state);
+    let response = ws.max_message_size(max).on_upgrade(move |socket| {
+        tracker.track_future(async move {
+            let ending = ProfileEnding {
+                token,
+                cancel,
+                read_only,
+                resumable,
+            };
+            profile_session(state, socket, session, payload, ending).await;
+            drop(spent_guard);
+        })
+    });
+    with_proxy_applied(with_resume_header(response, header_token), proxied)
+}
+
+type RequestedProxy = (crate::proxy::ProxyUpstream, crate::proxy::RelayOptions);
+
+/// Reads the session's proxy request. A request this server cannot honour is
+/// refused here, so a session that asked for a proxy never runs without it.
+fn requested_proxy(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<RequestedProxy>, Box<Response>> {
+    let Some(value) = headers.get(PROXY_HEADER) else {
+        return Ok(None);
+    };
+    let options = state
+        .session_proxy
+        .clone()
+        .map_err(|reason| Box::new(reject(StatusCode::BAD_REQUEST, "proxy_unsupported", reason)))?;
+    let raw = value.to_str().map_err(|_| {
+        Box::new(reject(
+            StatusCode::BAD_REQUEST,
+            "invalid_proxy",
+            "proxy header is not text",
+        ))
+    })?;
+    let upstream = crate::proxy::ProxyUpstream::parse(raw).map_err(|e| {
+        Box::new(reject(
+            StatusCode::BAD_REQUEST,
+            "invalid_proxy",
+            &e.to_string(),
+        ))
+    })?;
+    Ok(Some((upstream, options)))
+}
+
+fn proxy_start_refused(e: &crate::proxy::ProxyError) -> Response {
+    match e {
+        crate::proxy::ProxyError::AddressNotAllowed(_) => {
+            reject(StatusCode::BAD_REQUEST, "proxy_not_allowed", &e.to_string())
+        }
+        _ => reject(StatusCode::BAD_GATEWAY, "proxy_unavailable", &e.to_string()),
+    }
+}
+
+fn with_proxy_applied(mut response: Response, proxied: bool) -> Response {
+    if proxied && response.status() == StatusCode::SWITCHING_PROTOCOLS {
+        response
+            .headers_mut()
+            .insert(PROXY_APPLIED_HEADER, HeaderValue::from_static("1"));
+    }
+    response
 }
 
 /// Serves a claimed pool browser over the upgraded WebSocket. With a resume

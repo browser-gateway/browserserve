@@ -157,6 +157,21 @@ localStorage is read from the browser's on-disk store after it exits, so every o
 
 **Current limitations, being tightened before a 1.0.** IndexedDB and service workers are browserserve-native, so that layer does not transfer to a different provider. Service-worker restore fidelity is not yet independently measured. Importing a profile captured on a different Chromium build is untested. Cookies with an opaque partition key (CHIPS) are dropped. Profiles are proven on the portable isolation tier; the kernel-cgroup tier together with profiles has been validated in a Docker Desktop environment, with broad production validation ongoing.
 
+## Proxies
+
+A session can send all of its traffic through your own proxy. Pass the proxy in a request header when you connect:
+
+```js
+const browser = await puppeteer.connect({
+  browserWSEndpoint: "ws://localhost:9222",
+  headers: { "Browserserve-Proxy": "http://user:pass@proxy.example.com:8080" },
+});
+```
+
+`http://`, `https://` (TLS to the proxy, certificate checked) and `socks5://` are supported, each with or without a login. Chrome cannot use a proxy login or SOCKS5 with a login by itself, so browserserve runs a small relay on `127.0.0.1` for the session that adds the login; the address and password never appear on the browser's command line or in logs. The upgrade response carries `Browserserve-Proxy-Applied: 1` when the proxy is in place; if you asked for a proxy and that header is missing (an older browserserve), close the session. Sending it as a header rather than in the URL keeps the password out of access logs.
+
+A session with a proxy starts its own browser instead of a warm one (a proxy is a launch setting) and counts against `pool.maxSessions`. Loopback addresses go through the proxy too, and WebRTC cannot send UDP outside it. Proxies on private or local networks (`10.x`, `192.168.x`, `127.x`, link-local, and so on) are refused so a client cannot reach the server's own network through one; set `proxy.allowPrivateUpstream: true` if your proxy lives on your LAN. Chrome's own background requests (update and time checks) also go through the proxy.
+
 ## Why not run Chrome yourself?
 
 You can start Chrome with `--remote-debugging-port=9222` and point a client at it. The difference is what happens when more than one thing connects.
@@ -240,6 +255,8 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 | `pressure.maxCpuPercent` | `95` | Reject new sessions above this host CPU usage. |
 | `pressure.maxMemoryPercent` | `95` | Reject new sessions above this host memory usage. |
 | `chrome.noSandbox` | `false` | Opt out of the Chromium sandbox (see [Sandbox](#sandbox)). |
+| `proxy.enabled` | `true` | Accept per-session proxies (see [Proxies](#proxies)). Env: `BROWSERSERVE_PROXY`. |
+| `proxy.allowPrivateUpstream` | `false` | Allow a session proxy on a private or local network. Env: `BROWSERSERVE_PROXY_ALLOW_PRIVATE`. |
 | `chrome.stealth` | `true` | Hide the signals that mark the browser as headless and automated, which bot checks reject: `navigator.webdriver` (true whenever CDP runs over a pipe), the `HeadlessChrome` user agent (replaced with the stock `Chrome/<major>.0.0.0` one for the installed browser), and the 800x600 headless screen (reported as 1920x1080). A `--user-agent` or `--screen-info` in `extraFlags` takes precedence. It does not change the IP address: a site that scores datacenter addresses harshly may still ask for a click, or block outright, without a residential proxy. Env: `BROWSERSERVE_STEALTH`. |
 | `chrome.extraFlags` | `[]` | Extra Chromium flags, appended after the built-in set. |
 | `externalAddress` | Host header | Public address advertised in `webSocketDebuggerUrl`; set this when running behind a proxy or load balancer. |
@@ -247,7 +264,7 @@ Everything works with zero configuration. To tune it, mount a `browserserve.yml`
 
 See [`browserserve.example.yml`](browserserve.example.yml) for every key with inline notes. Unknown keys are rejected, so a typo in the config fails fast at startup.
 
-Environment: `PORT` (default 9222), `HOST` (default `0.0.0.0`), `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_CHROME_PATH`, `BROWSERSERVE_DATA_DIR`, and these overrides of the keys above: `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`, `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`, `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`, `BROWSERSERVE_SINGLE_USE`, `BROWSERSERVE_RESUME_WINDOW_MS`, `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_STEALTH`, `BROWSERSERVE_NO_SANDBOX`, `BROWSERSERVE_REQUIRE_SANDBOX`. Docker image only: `BROWSERSERVE_BLOCK_METADATA`, `BROWSERSERVE_DNS` (see [Security](#security)).
+Environment: `PORT` (default 9222), `HOST` (default `0.0.0.0`), `BROWSERSERVE_TOKEN` (enables auth when set), `BROWSERSERVE_CONFIG`, `BROWSERSERVE_CHROME_PATH`, `BROWSERSERVE_DATA_DIR`, and these overrides of the keys above: `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`, `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`, `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`, `BROWSERSERVE_SINGLE_USE`, `BROWSERSERVE_RESUME_WINDOW_MS`, `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_STEALTH`, `BROWSERSERVE_PROXY`, `BROWSERSERVE_PROXY_ALLOW_PRIVATE`, `BROWSERSERVE_NO_SANDBOX`, `BROWSERSERVE_REQUIRE_SANDBOX`. Docker image only: `BROWSERSERVE_BLOCK_METADATA`, `BROWSERSERVE_DNS` (see [Security](#security)).
 
 ## CLI
 

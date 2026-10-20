@@ -200,14 +200,10 @@ impl<F: SessionFactory> Pool<F> {
         pool
     }
 
-    /// Claims a session: warm hit is instant, otherwise an inline launch,
-    /// otherwise a bounded, timed wait for capacity.
-    ///
-    /// # Errors
-    ///
-    /// [`ClaimError::QueueFull`], [`ClaimError::QueueTimeout`],
-    /// [`ClaimError::Closed`], or [`ClaimError::Launch`].
-    pub async fn claim(&self) -> Result<Claimed<F>, ClaimError> {
+    /// Takes one session slot, waiting in the bounded queue when none is free.
+    /// The slot is owned by the caller until a session is destroyed (or the
+    /// caller gives it back after a failed launch).
+    async fn acquire_slot(&self) -> Result<(), ClaimError> {
         let inner = &self.inner;
         let options = &inner.options;
 
@@ -236,6 +232,19 @@ impl<F: SessionFactory> Pool<F> {
             }
         };
         permit.forget();
+        Ok(())
+    }
+
+    /// Claims a session: warm hit is instant, otherwise an inline launch,
+    /// otherwise a bounded, timed wait for capacity.
+    ///
+    /// # Errors
+    ///
+    /// [`ClaimError::QueueFull`], [`ClaimError::QueueTimeout`],
+    /// [`ClaimError::Closed`], or [`ClaimError::Launch`].
+    pub async fn claim(&self) -> Result<Claimed<F>, ClaimError> {
+        let inner = &self.inner;
+        self.acquire_slot().await?;
 
         loop {
             let Some(warm) = inner.pop_warm() else { break };
@@ -255,16 +264,39 @@ impl<F: SessionFactory> Pool<F> {
         }
 
         inner.replenish.notify_one();
-        match inner.factory.create().await {
+        self.hand_out(inner.factory.create().await)
+    }
+
+    /// Wraps a freshly launched session as a claim, or gives the held slot
+    /// back when the launch failed.
+    fn hand_out(&self, launched: Result<F::Session, String>) -> Result<Claimed<F>, ClaimError> {
+        match launched {
             Ok(session) => Ok(Claimed {
                 session: Some(session),
-                pool: Arc::clone(inner),
+                pool: Arc::clone(&self.inner),
             }),
             Err(message) => {
-                inner.semaphore.add_permits(1);
+                self.inner.semaphore.add_permits(1);
                 Err(ClaimError::Launch { message })
             }
         }
+    }
+
+    /// Claims a slot like [`Pool::claim`] but runs `launch` for a dedicated
+    /// session instead of handing out a warm one, for sessions whose browser
+    /// needs launch-time settings. `launch` only starts once a slot is held;
+    /// the session counts against `max_sessions` and is destroyed through
+    /// [`Pool::destroy`] like any other.
+    ///
+    /// # Errors
+    ///
+    /// As [`Pool::claim`]; a failed `launch` gives the slot back.
+    pub async fn claim_with(
+        &self,
+        launch: impl std::future::Future<Output = Result<F::Session, String>>,
+    ) -> Result<Claimed<F>, ClaimError> {
+        self.acquire_slot().await?;
+        self.hand_out(launch.await)
     }
 
     /// Destroys a claimed session and frees its capacity afterwards.

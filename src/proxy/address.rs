@@ -38,21 +38,11 @@ fn blocked_v6(ip: Ipv6Addr) -> bool {
         return blocked_v4(v4);
     }
     let seg = ip.segments();
-    if seg[..6] == [0, 0, 0, 0, 0, 0] && !ip.is_unspecified() && !ip.is_loopback() {
-        return blocked_v4(Ipv4Addr::new(
-            (seg[6] >> 8) as u8,
-            (seg[6] & 0xff) as u8,
-            (seg[7] >> 8) as u8,
-            (seg[7] & 0xff) as u8,
-        ));
-    }
-    if seg[0] == 0x64 && seg[1] == 0xff9b {
-        return blocked_v4(Ipv4Addr::new(
-            (seg[6] >> 8) as u8,
-            (seg[6] & 0xff) as u8,
-            (seg[7] >> 8) as u8,
-            (seg[7] & 0xff) as u8,
-        ));
+    let compatible = seg[..6] == [0, 0, 0, 0, 0, 0] && !ip.is_unspecified() && !ip.is_loopback();
+    let nat64 = seg[0] == 0x64 && seg[1] == 0xff9b;
+    if compatible || nat64 {
+        let [.., a, b, c, d] = ip.octets();
+        return blocked_v4(Ipv4Addr::new(a, b, c, d));
     }
     ip.is_unspecified()
         || ip.is_loopback()

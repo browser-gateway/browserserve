@@ -66,6 +66,9 @@ pub struct AppState {
     /// Present when `session.resumeWindowMs` is above zero: parked sessions
     /// waiting for their client to reconnect.
     pub resume: Option<Arc<resume::ResumeRegistry>>,
+    /// Relay settings for sessions that ask for an upstream proxy, or the
+    /// reason such sessions are refused on this server.
+    pub session_proxy: Result<crate::proxy::RelayOptions, &'static str>,
 }
 
 /// Builds the router: probe routes carry an HTTP timeout; the WS route does
@@ -143,6 +146,7 @@ pub async fn serve(loaded: Loaded) -> Result<(), String> {
     );
 
     let state = Arc::new(AppState {
+        session_proxy: session_proxy_policy(&config),
         pool: pool.clone(),
         factory,
         token: loaded.serve.token,
@@ -297,4 +301,27 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = sigterm.recv() => {}
     }
+}
+
+/// Whether this server applies per-session proxies. An operator-wide
+/// `--proxy-server` flag would silently override a session's proxy (Chrome
+/// keeps the last occurrence), so such servers refuse session proxies.
+fn session_proxy_policy(
+    config: &crate::config::RuntimeConfig,
+) -> Result<crate::proxy::RelayOptions, &'static str> {
+    let refusal = if !config.proxy.enabled {
+        Some("session proxies are disabled on this server")
+    } else if crate::chrome::flags::sets_proxy(&config.chrome.extra_flags) {
+        Some("this server's own --proxy-server flag applies to every session")
+    } else {
+        None
+    };
+    if let Some(reason) = refusal {
+        tracing::info!(reason, "session proxies are off");
+        return Err(reason);
+    }
+    Ok(crate::proxy::RelayOptions {
+        allow_private: config.proxy.allow_private_upstream,
+        ..crate::proxy::RelayOptions::default()
+    })
 }

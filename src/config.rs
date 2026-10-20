@@ -136,6 +136,27 @@ impl Default for PressureConfig {
     }
 }
 
+/// Per-session upstream proxies, requested with the `Browserserve-Proxy`
+/// header on the WebSocket upgrade.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProxyConfig {
+    /// Accept session proxies at all.
+    pub enabled: bool,
+    /// Allow proxies on private or local networks (refused by default so a
+    /// client cannot reach the server's own network through one).
+    pub allow_private_upstream: bool,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_private_upstream: false,
+        }
+    }
+}
+
 /// How the runtime talks CDP to each Chrome it launches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -199,6 +220,8 @@ pub struct RuntimeConfig {
     pub pressure: PressureConfig,
     /// Chrome discovery and launch settings.
     pub chrome: ChromeConfig,
+    /// Per-session upstream proxies.
+    pub proxy: ProxyConfig,
     /// Directory holding per-session state. Created if missing.
     pub data_dir: PathBuf,
     /// Time budget for draining active sessions on shutdown, in milliseconds.
@@ -215,6 +238,7 @@ impl Default for RuntimeConfig {
             session: SessionConfig::default(),
             pressure: PressureConfig::default(),
             chrome: ChromeConfig::default(),
+            proxy: ProxyConfig::default(),
             data_dir: PathBuf::from(".browserserve"),
             drain_timeout_ms: 30_000,
             external_address: None,
@@ -256,7 +280,8 @@ fn is_truthy(value: &str) -> bool {
 /// `BROWSERSERVE_MIN_READY`, `BROWSERSERVE_MAX_SESSIONS`, `BROWSERSERVE_MAX_QUEUE`,
 /// `BROWSERSERVE_QUEUE_TIMEOUT_MS`, `BROWSERSERVE_IDLE_TIMEOUT_MS`,
 /// `BROWSERSERVE_MEMORY_MAX_MB`, `BROWSERSERVE_CPU_PERCENT`, `BROWSERSERVE_PIDS_MAX`,
-/// `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_SINGLE_USE`, `BROWSERSERVE_RESUME_WINDOW_MS`. Returns a
+/// `BROWSERSERVE_CALIBRATE`, `BROWSERSERVE_SINGLE_USE`, `BROWSERSERVE_RESUME_WINDOW_MS`,
+/// `BROWSERSERVE_PROXY`, `BROWSERSERVE_PROXY_ALLOW_PRIVATE`. Returns a
 /// validated [`Loaded`].
 ///
 /// # Errors
@@ -414,6 +439,12 @@ fn apply_switches<S: std::hash::BuildHasher>(
     if let Some(value) = env.get("BROWSERSERVE_STEALTH") {
         config.chrome.stealth = is_truthy(value);
     }
+    if let Some(value) = env.get("BROWSERSERVE_PROXY") {
+        config.proxy.enabled = is_truthy(value);
+    }
+    if let Some(value) = env.get("BROWSERSERVE_PROXY_ALLOW_PRIVATE") {
+        config.proxy.allow_private_upstream = is_truthy(value);
+    }
     if let Some(value) = env.get("BROWSERSERVE_CALIBRATE") {
         config.pool.calibrate = is_truthy(value);
     }
@@ -531,6 +562,23 @@ dataDir: /var/lib/bgr
         assert!(!loaded.config.chrome.stealth);
         let loaded = load(Some("chrome:\n  stealth: false\n"), &env(&[])).unwrap();
         assert!(!loaded.config.chrome.stealth);
+    }
+
+    #[test]
+    fn session_proxies_are_on_and_private_proxies_off_by_default() {
+        let loaded = load(None, &env(&[])).unwrap();
+        assert!(loaded.config.proxy.enabled && !loaded.config.proxy.allow_private_upstream);
+        let loaded = load(
+            None,
+            &env(&[
+                ("BROWSERSERVE_PROXY", "0"),
+                ("BROWSERSERVE_PROXY_ALLOW_PRIVATE", "1"),
+            ]),
+        )
+        .unwrap();
+        assert!(!loaded.config.proxy.enabled && loaded.config.proxy.allow_private_upstream);
+        let loaded = load(Some("proxy:\n  allowPrivateUpstream: true\n"), &env(&[])).unwrap();
+        assert!(loaded.config.proxy.allow_private_upstream);
     }
 
     #[test]

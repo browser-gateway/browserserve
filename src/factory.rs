@@ -39,6 +39,7 @@ pub struct ChromeSession {
     pub dirs: SessionDirs,
     cgroup: Option<SessionCgroup>,
     monitor: Option<AbortHandle>,
+    relay: Option<crate::proxy::Relay>,
 }
 
 /// The native-layer state captured from a dead session's user-data-dir.
@@ -191,7 +192,10 @@ impl ChromeFactory {
                 return;
             }
         };
-        let browser = match self.launch_browser(&scratch.user_data_dir, None).await {
+        let browser = match self
+            .launch_browser(&scratch.user_data_dir, None, &self.inner.extra_flags)
+            .await
+        {
             Ok(browser) => browser,
             Err(e) => {
                 tracing::warn!(error = %e, "template: warm launch failed; sessions use empty dirs");
@@ -245,6 +249,7 @@ impl ChromeFactory {
         &'a self,
         user_data_dir: &'a std::path::Path,
         cgroup_leaf: Option<&'a std::path::Path>,
+        extra_flags: &'a [String],
     ) -> LaunchSpec<'a> {
         LaunchSpec {
             cgroup_leaf,
@@ -252,7 +257,7 @@ impl ChromeFactory {
             user_data_dir,
             no_sandbox: self.inner.sandbox_disabled.load(Ordering::Relaxed),
             disable_dev_shm: self.inner.disable_dev_shm,
-            extra_flags: &self.inner.extra_flags,
+            extra_flags,
             launch_timeout: self.inner.launch_timeout,
             max_frame_bytes: self.inner.max_frame_bytes,
         }
@@ -269,9 +274,10 @@ impl ChromeFactory {
         &self,
         user_data_dir: &std::path::Path,
         cgroup_leaf: Option<&std::path::Path>,
+        extra_flags: &[String],
     ) -> Result<Browser, crate::chrome::LaunchError> {
         let sandboxed = !self.inner.sandbox_disabled.load(Ordering::Relaxed);
-        match launch(&self.launch_spec(user_data_dir, cgroup_leaf)).await {
+        match launch(&self.launch_spec(user_data_dir, cgroup_leaf, extra_flags)).await {
             Ok(browser) => Ok(browser),
             Err(e) if sandboxed && e.is_sandbox_failure() => {
                 let first = !self.inner.sandbox_blocked.swap(true, Ordering::SeqCst);
@@ -291,7 +297,7 @@ impl ChromeFactory {
                         "Chromium's sandbox is blocked on this host; falling back to --no-sandbox (safe for trusted content, isolation is unaffected)"
                     );
                 }
-                launch(&self.launch_spec(user_data_dir, cgroup_leaf)).await
+                launch(&self.launch_spec(user_data_dir, cgroup_leaf, extra_flags)).await
             }
             Err(e) => Err(e),
         }
@@ -362,7 +368,7 @@ impl SessionFactory for ChromeFactory {
 
     async fn create(&self) -> Result<ChromeSession, String> {
         let dirs = self.provision_dirs().await?;
-        self.launch_session(dirs).await
+        self.launch_session(dirs, None).await
     }
 
     async fn destroy(&self, session: ChromeSession) {
@@ -389,6 +395,7 @@ impl ChromeFactory {
     pub async fn create_seeded(
         &self,
         indexeddb: &[ManifestEntry],
+        relay: Option<crate::proxy::Relay>,
     ) -> Result<ChromeSession, String> {
         let dirs = self.provision_dirs().await?;
         if !indexeddb.is_empty() {
@@ -410,13 +417,37 @@ impl ChromeFactory {
                 }
             }
         }
-        self.launch_session(dirs).await
+        self.launch_session(dirs, relay).await
     }
 
-    async fn launch_session(&self, dirs: SessionDirs) -> Result<ChromeSession, String> {
+    /// Launches a fresh session whose browser sends all traffic through
+    /// `relay`. The relay closes when the session is destroyed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when dir provisioning or the launch fails.
+    pub async fn create_proxied(
+        &self,
+        relay: crate::proxy::Relay,
+    ) -> Result<ChromeSession, String> {
+        let dirs = self.provision_dirs().await?;
+        self.launch_session(dirs, Some(relay)).await
+    }
+
+    async fn launch_session(
+        &self,
+        dirs: SessionDirs,
+        relay: Option<crate::proxy::Relay>,
+    ) -> Result<ChromeSession, String> {
+        let mut extra_flags = self.inner.extra_flags.clone();
+        if let Some(relay) = &relay {
+            extra_flags.extend(crate::chrome::flags::session_proxy_flags(
+                &relay.proxy_server(),
+            ));
+        }
         let mut cgroup = self.prepare_leaf();
         let mut launched = self
-            .launch_browser(&dirs.user_data_dir, leaf_dir(cgroup.as_ref()))
+            .launch_browser(&dirs.user_data_dir, leaf_dir(cgroup.as_ref()), &extra_flags)
             .await;
         if cgroup.is_some()
             && launched
@@ -429,7 +460,9 @@ impl ChromeFactory {
                 );
             }
             self.destroy_cgroup(cgroup.take()).await;
-            launched = self.launch_browser(&dirs.user_data_dir, None).await;
+            launched = self
+                .launch_browser(&dirs.user_data_dir, None, &extra_flags)
+                .await;
         }
         let browser = match launched {
             Ok(browser) => browser,
@@ -451,6 +484,7 @@ impl ChromeFactory {
             dirs,
             cgroup,
             monitor,
+            relay,
         })
     }
 
@@ -460,6 +494,7 @@ impl ChromeFactory {
             dirs,
             cgroup,
             monitor,
+            relay,
         } = session;
         if let Some(monitor) = monitor {
             monitor.abort();
@@ -468,6 +503,7 @@ impl ChromeFactory {
         // teardown then reaps the direct child and is the universal fallback.
         self.destroy_cgroup(cgroup).await;
         let report = teardown(browser, self.inner.kill_grace).await;
+        drop(relay);
         if !report.reaped {
             tracing::warn!(exit = ?report.exit_status, "browser was not reaped during teardown");
         }

@@ -146,6 +146,29 @@ pub fn launch_extra_flags(stealth: bool, executable: &Path, extra: &[String]) ->
     flags
 }
 
+/// True when operator flags already route the browser through a proxy.
+#[must_use]
+pub fn sets_proxy(extra: &[String]) -> bool {
+    extra.iter().any(|f| {
+        let name = f.split('=').next().unwrap_or("");
+        matches!(
+            name,
+            "--proxy-server" | "--proxy-pac-url" | "--proxy-auto-detect"
+        )
+    })
+}
+
+/// Switches that send one session's browser through its local proxy relay:
+/// loopback goes through the proxy too, and WebRTC may not use UDP outside it.
+#[must_use]
+pub fn session_proxy_flags(proxy_server: &str) -> Vec<String> {
+    vec![
+        format!("--proxy-server={proxy_server}"),
+        "--proxy-bypass-list=<-loopback>".to_string(),
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string(),
+    ]
+}
+
 /// Inputs for assembling the final argument list.
 #[derive(Debug)]
 pub struct FlagOptions<'a> {
@@ -439,5 +462,23 @@ mod tests {
         ] {
             assert!(!flags.iter().any(|f| f == banned), "{banned} must not ship");
         }
+    }
+
+    #[test]
+    fn detects_operator_proxy_flags_and_builds_session_flags() {
+        assert!(sets_proxy(&["--proxy-server=http://x:1".into()]));
+        assert!(sets_proxy(&["--proxy-pac-url=http://x/p.pac".into()]));
+        assert!(!sets_proxy(&[
+            "--proxy-bypass-list=x".into(),
+            "--lang=en".into()
+        ]));
+        assert_eq!(
+            session_proxy_flags("http://127.0.0.1:4000"),
+            vec![
+                "--proxy-server=http://127.0.0.1:4000",
+                "--proxy-bypass-list=<-loopback>",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ]
+        );
     }
 }

@@ -4,6 +4,11 @@ All notable changes to browserserve are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Per-session upstream proxy. Send the proxy address in a `Browserserve-Proxy` request header on the WebSocket upgrade (`http://`, `https://` or `socks5://`, with or without `user:password@`). The session's browser sends all of its traffic through it, and the upgrade response carries `Browserserve-Proxy-Applied: 1`; a client that asked for a proxy should refuse a session without that header. A small relay on `127.0.0.1` adds the login, so the address and password never reach the browser's command line or the logs. Proxies on private or local networks are refused unless `proxy.allowPrivateUpstream` is set. Sessions with a proxy start a fresh browser (no warm pool) and count against `pool.maxSessions`. `/json/version` reports `Browserserve-Proxy`. Settings: `proxy.enabled` (env `BROWSERSERVE_PROXY`, default on), `proxy.allowPrivateUpstream` (env `BROWSERSERVE_PROXY_ALLOW_PRIVATE`). A server whose `chrome.extraFlags` sets its own `--proxy-server` refuses session proxies instead of silently ignoring them.
+
 ## [0.1.22] - 2026-10-15
 
 ### Fixed

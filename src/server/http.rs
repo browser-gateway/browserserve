@@ -217,6 +217,7 @@ pub async fn json_version(
         "Browserserve-Version": env!("CARGO_PKG_VERSION"),
         "Browserserve-MaxConcurrent": state.pool.stats().max_sessions,
         "Browserserve-Calibrating": state.calibrating.load(std::sync::atomic::Ordering::Relaxed),
+        "Browserserve-Proxy": state.session_proxy.is_ok(),
     }))
     .into_response()
 }
