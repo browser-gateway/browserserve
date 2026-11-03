@@ -2,11 +2,11 @@
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 # amd64 ships Google's Chrome for Testing build of the current Stable release.
-# Google publishes no linux-arm64 build, so arm64 ships the Chromium build of the
-# newest released playwright-core (1.63.0, Chromium 153.0.8010.12), which can lag
-# Stable. scripts/chrome-update.sh reports when either pin is behind.
+# Google publishes no linux-arm64 build, so arm64 ships the Chrome for Testing
+# arm64 build that the newest released playwright-core (1.63.0, Chromium 153.0.8010.12)
+# downloads, which can lag Stable. scripts/chrome-update.sh reports when either pin is behind.
 ARG TARGETARCH
-ARG CHROMIUM_REVISION=1243
+ARG CHROMIUM_ARM64_VERSION=153.0.8010.12
 ARG CHROMIUM_VERSION=154.0.8037.92
 ARG CHROMIUM_SHA256_AMD64=""
 ARG CHROMIUM_SHA256_ARM64=""
@@ -54,8 +54,8 @@ RUN set -eu; \
         url="https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
         inner="chrome-linux64"; sha="$CHROMIUM_SHA256_AMD64" ;; \
       arm64) \
-        url="https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/${CHROMIUM_REVISION}/chromium-linux-arm64.zip"; \
-        inner="chrome-linux"; sha="$CHROMIUM_SHA256_ARM64" ;; \
+        url="https://cdn.playwright.dev/builds/cft/${CHROMIUM_ARM64_VERSION}/linux-arm64/chrome-linux-arm64.zip"; \
+        inner="chrome-linux-arm64"; sha="$CHROMIUM_SHA256_ARM64" ;; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     test -n "$sha" || { echo "missing chromium sha256 for $TARGETARCH" >&2; exit 1; }; \
