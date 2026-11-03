@@ -6,6 +6,9 @@ All notable changes to browserserve are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+- Updated `tokio` from 1.53.0 to 1.53.3 for RUSTSEC-2026-0386 (`AsyncFd::new` and related constructors violate I/O safety). browserserve does not call these constructors; the update clears the advisory, which was failing the `cargo deny` CI check.
+
 ### Fixed
 - The weekly browser check (`chrome-update` workflow) failed every run since 2026-10-12 with `curl: (22) ... error: 400`. Playwright no longer publishes arm64 Chromium under `builds/chromium/<revision>/` (the last one there is revision 1243); newer builds are Chrome for Testing archives at `builds/cft/<browserVersion>/linux-arm64/chrome-linux-arm64.zip`. The arm64 pin is now that browser version (`CHROMIUM_ARM64_VERSION`, replacing `CHROMIUM_REVISION`), and the image and `scripts/chrome-update.sh` download from the new location. The arm64 browser is still 153.0.8010.12; its checksum changed because the archive is a different build of the same version.
 
