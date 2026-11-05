@@ -382,13 +382,14 @@ pub fn load<S: std::hash::BuildHasher>(
         })?,
         None => 9222,
     };
+    let token = read_token(env)?;
     let serve = ServeSettings {
         port,
         host: env
             .get("HOST")
             .cloned()
             .unwrap_or_else(|| String::from("0.0.0.0")),
-        token: env.get("BROWSERSERVE_TOKEN").cloned(),
+        token,
     };
 
     validate(&config)?;
@@ -455,6 +456,18 @@ fn apply_switches<S: std::hash::BuildHasher>(
         config.pool.max_sessions = Some(1);
         config.pool.calibrate = false;
     }
+}
+
+fn read_token<S: std::hash::BuildHasher>(
+    env: &HashMap<String, String, S>,
+) -> Result<Option<String>, ConfigError> {
+    let token = env.get("BROWSERSERVE_TOKEN").cloned();
+    if token.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err(ConfigError::Invalid(String::from(
+            "BROWSERSERVE_TOKEN is set but empty; set a token or unset the variable",
+        )));
+    }
+    Ok(token)
 }
 
 fn validate(config: &RuntimeConfig) -> Result<(), ConfigError> {
@@ -789,6 +802,16 @@ dataDir: /var/lib/bgr
             load(Some(yaml), &HashMap::new()),
             Err(ConfigError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn empty_token_is_rejected() {
+        for value in ["", "  "] {
+            assert!(matches!(
+                load(None, &env(&[("BROWSERSERVE_TOKEN", value)])),
+                Err(ConfigError::Invalid(_))
+            ));
+        }
     }
 
     #[test]

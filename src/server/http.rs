@@ -25,9 +25,25 @@ pub(crate) fn unauthorized() -> Response {
 }
 
 pub(crate) fn check_auth(state: &AppState, query: &QueryMap, headers: &HeaderMap) -> bool {
-    auth::authorized(
+    request_authorized(
         state.token.as_deref(),
         query.get("token").map(String::as_str),
+        headers,
+    )
+}
+
+fn request_authorized(token: Option<&str>, query_token: Option<&str>, headers: &HeaderMap) -> bool {
+    if token.is_none() {
+        let origin = headers
+            .get(axum::http::header::ORIGIN)
+            .map(|value| value.to_str().unwrap_or("invalid"));
+        if !auth::tokenless_origin_allowed(origin) {
+            return false;
+        }
+    }
+    auth::authorized(
+        token,
+        query_token,
         headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok()),
@@ -277,7 +293,36 @@ pub async fn profile_pick_up(
 
 #[cfg(test)]
 mod tests {
-    use super::{Gate, PressureInputs, unavailable_reason};
+    use super::{Gate, PressureInputs, request_authorized, unavailable_reason};
+    use axum::http::{HeaderMap, HeaderValue, header::ORIGIN};
+
+    fn with_origin(origin: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(ORIGIN, HeaderValue::from_static(origin));
+        headers
+    }
+
+    #[test]
+    fn a_tokenless_instance_refuses_a_foreign_page() {
+        assert!(request_authorized(None, None, &HeaderMap::new()));
+        assert!(request_authorized(
+            None,
+            None,
+            &with_origin("http://localhost:3000")
+        ));
+        assert!(!request_authorized(
+            None,
+            None,
+            &with_origin("https://attacker.example")
+        ));
+    }
+
+    #[test]
+    fn a_token_instance_ignores_origin() {
+        let headers = with_origin("https://app.example");
+        assert!(request_authorized(Some("secret"), Some("secret"), &headers));
+        assert!(!request_authorized(Some("secret"), None, &headers));
+    }
 
     fn healthy() -> PressureInputs {
         PressureInputs {
