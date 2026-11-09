@@ -3,11 +3,11 @@ FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7
 
 # amd64 ships Google's Chrome for Testing build of the current Stable release.
 # Google publishes no linux-arm64 build, so arm64 ships the Chrome for Testing
-# arm64 build that the newest released playwright-core (1.63.0, Chromium 153.0.8010.12)
+# arm64 build that the newest released playwright-core (1.65.0, Chromium 158.0.8127.18)
 # downloads, which can lag Stable. scripts/chrome-update.sh reports when either pin is behind.
 ARG TARGETARCH
-ARG CHROMIUM_ARM64_VERSION=153.0.8010.12
-ARG CHROMIUM_VERSION=154.0.8037.92
+ARG CHROMIUM_ARM64_VERSION=158.0.8127.18
+ARG CHROMIUM_VERSION=157.0.8103.38
 ARG CHROMIUM_SHA256_AMD64=""
 ARG CHROMIUM_SHA256_ARM64=""
 
