@@ -9,6 +9,8 @@ All notable changes to browserserve are documented here. The format is based on
 ### Security
 - An instance running without `BROWSERSERVE_TOKEN` now refuses requests whose `Origin` is not `localhost`, `127.x` or `[::1]`, so a web page on another site, or one pointing its own domain at your machine, can no longer open a browser on it. CDP clients such as Puppeteer and Playwright send no `Origin` and are unaffected.
 - A set but empty `BROWSERSERVE_TOKEN` is now a startup error. Before, `?token=` with no value matched it.
+- Updated `rusqlite` from 0.40 to 0.41, which bundles SQLite 3.54.1, for RUSTSEC-2026-0459 (SQLite before 3.54.0 can return uninitialized memory when a database and its write-ahead log have different page sizes). browserserve opens the browser's own localStorage database when it captures a profile.
+- `procfs` no longer pulls in `chrono`, which is unmaintained (RUSTSEC-2026-0543); browserserve never used its date features.
 - Updated `tokio` from 1.53.0 to 1.53.3 for RUSTSEC-2026-0386 (`AsyncFd::new` and related constructors violate I/O safety). browserserve does not call these constructors; the update clears the advisory, which was failing the `cargo deny` CI check.
 
 ### Fixed
