@@ -6,13 +6,23 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
+
+concurrency:
+  group: chrome-update
+  cancel-in-progress: false
+
+env:
+  BRANCH: chrome-update
 
 jobs:
-  check:
+  update:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+      summary: ${{ steps.update.outputs.summary }}
     steps:
       - uses: actions/checkout@v5
       - name: Check and update the browser pins
@@ -25,26 +35,210 @@ jobs:
           [ "$code" -eq 0 ] || exit "$code"
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Open a pull request
-        if: steps.update.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          branch="chrome-update/$(date -u +%Y-%m-%d)"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            echo "branch $branch already exists"
             exit 0
           fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "summary<<EOF"
+            cat update.log
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Push the update branch
+        if: steps.update.outputs.changed == 'true'
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
+          git checkout -b "$BRANCH"
           git commit -am "chore: update bundled browser ($(tail -n1 update.log))"
-          git push origin "$branch"
-          body="$(cat update.log)
+          git push --force origin "$BRANCH"
 
-          Merge after the gate passes and a real-browser check on the built image. Not merged automatically."
-          gh pr create --title "chore: update bundled browser" --body "$body" --head "$branch" \
-            || gh issue create --title "Bundled browser is behind" --body "$body"
+  code-checks:
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: chrome-update
+
+  image-check:
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - arch: arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build static binary
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+          mkdir -p docker/bin/${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/browserserve docker/bin/${{ matrix.arch }}/browserserve
+      - name: Build the image
+        id: build
+        run: |
+          docker build \
+            --build-arg CHROMIUM_SHA256_AMD64="$(cut -d' ' -f1 docker/checksums/chrome-linux64.sha256)" \
+            --build-arg CHROMIUM_SHA256_ARM64="$(cut -d' ' -f1 docker/checksums/chromium-linux-arm64.sha256)" \
+            -f docker/Dockerfile -t browserserve:check docker/
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install test clients
+        working-directory: e2e
+        run: npm ci
+      - name: Start the image
+        id: start
+        run: |
+          docker run -d --name bs --shm-size=1g -p 9222:9222 browserserve:check
+          docker run -d --name bs-resume --shm-size=1g -p 9223:9222 -e BROWSERSERVE_RESUME_WINDOW_MS=15000 browserserve:check
+          for port in 9222 9223; do
+            ok=0
+            for _ in $(seq 1 120); do
+              curl -fsS "http://127.0.0.1:$port/ready" >/dev/null 2>&1 && { ok=1; break; }
+              sleep 1
+            done
+            [ "$ok" = 1 ] || { docker logs bs; docker logs bs-resume; exit 1; }
+          done
+          curl -fsS http://127.0.0.1:9222/json/version | python3 -c 'import json,sys; print("browser=" + json.load(sys.stdin)["Browser"])' >> "$GITHUB_OUTPUT"
+      - name: Smoke test (Puppeteer and Playwright)
+        id: smoke
+        if: always() && steps.start.outcome == 'success'
+        working-directory: e2e
+        run: BROWSERSERVE_URL=ws://127.0.0.1:9222 npx tsx smoke.ts
+      - name: Saved logins under concurrent sessions
+        id: profiles
+        if: always() && steps.start.outcome == 'success'
+        working-directory: e2e
+        run: BROWSERSERVE_URL=ws://127.0.0.1:9222 npx tsx profile-concurrent.ts
+      - name: Session resume after a cut
+        id: resume
+        if: always() && steps.start.outcome == 'success'
+        working-directory: e2e
+        run: BROWSERSERVE_URL=ws://127.0.0.1:9223 WINDOW_MS=15000 npx tsx resume.ts
+      - name: Saved logins with session resume
+        id: profile-resume
+        if: always() && steps.start.outcome == 'success'
+        working-directory: e2e
+        run: BROWSERSERVE_URL=ws://127.0.0.1:9223 WINDOW_MS=15000 npx tsx profile-resume.ts
+      - name: Cloud metadata block
+        id: metadata
+        if: always() && steps.build.outcome == 'success'
+        run: IMAGE=browserserve:check NET=bridge ./e2e/metadata-block.sh
+      - name: Container logs
+        if: always()
+        run: |
+          docker logs bs 2>&1 | tail -n 100 || true
+          docker logs bs-resume 2>&1 | tail -n 100 || true
+      - name: Write results
+        if: always()
+        env:
+          ARCH: ${{ matrix.arch }}
+          BROWSER: ${{ steps.start.outputs.browser }}
+          R_BUILD: ${{ steps.build.outcome }}
+          R_START: ${{ steps.start.outcome }}
+          R_SMOKE: ${{ steps.smoke.outcome }}
+          R_PROFILES: ${{ steps.profiles.outcome }}
+          R_RESUME: ${{ steps.resume.outcome }}
+          R_PROFILE_RESUME: ${{ steps.profile-resume.outcome }}
+          R_METADATA: ${{ steps.metadata.outcome }}
+        run: |
+          mark() { case "$1" in success) echo "pass" ;; skipped|"") echo "not run" ;; *) echo "**FAIL**" ;; esac; }
+          {
+            echo "| $ARCH, ${BROWSER:-browser did not start} | Result |"
+            echo "|---|---|"
+            echo "| Image builds, browser download matches its checksum | $(mark "$R_BUILD") |"
+            echo "| Server starts and reports ready | $(mark "$R_START") |"
+            echo "| Puppeteer and Playwright smoke test | $(mark "$R_SMOKE") |"
+            echo "| Saved logins, 5 sessions at once | $(mark "$R_PROFILES") |"
+            echo "| Session resume after a cut | $(mark "$R_RESUME") |"
+            echo "| Saved logins with session resume | $(mark "$R_PROFILE_RESUME") |"
+            echo "| Cloud metadata block | $(mark "$R_METADATA") |"
+            echo
+          } > "results-$ARCH.md"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.arch }}
+          path: results-${{ matrix.arch }}.md
+          retention-days: 7
+
+  propose:
+    needs: [update, code-checks, image-check]
+    if: always() && needs.update.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          merge-multiple: true
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SUMMARY: ${{ needs.update.outputs.summary }}
+          CODE: ${{ needs.code-checks.result }}
+          IMAGE: ${{ needs.image-check.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$CODE" = "success" ] && [ "$IMAGE" = "success" ]; then
+            verdict="**Safe to merge and release.** Every check below passed on amd64 and arm64."
+          else
+            verdict="**Do not merge.** At least one check failed (code checks: $CODE, image checks: $IMAGE). Fix it, then re-run this workflow."
+          fi
+          if [ "$CODE" = "success" ]; then code_line="pass"; else code_line="**FAIL** ($CODE)"; fi
+          tables=""
+          for f in results-amd64.md results-arm64.md; do
+            if [ -f "$f" ]; then tables="$tables$(cat "$f")"$'\n\n'; else tables="$tables${f#results-} results missing"$'\n\n'; fi
+          done
+          body="## Bundled browser update
+
+          \`\`\`
+          $SUMMARY
+          \`\`\`
+
+          $verdict
+
+          ### Code checks
+          Formatting, lint, unit and integration tests, dependency audit, duplication, release build, docs: $code_line
+
+          ### Image checks (real image, real browser)
+          $tables
+          Run with full logs: $RUN_URL
+
+          After merging: run the release workflow, then roll the new image out. Not merged automatically."
+          title="chore: update bundled browser"
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --body "$body"
+          elif ! gh pr create --title "$title" --body "$body" --head "$BRANCH" --base "$BASE"; then
+            issue=$(gh issue list --state open --search "in:title \"Bundled browser is behind\"" --json number --jq '.[0].number // empty')
+            note="Could not open the pull request; branch \`$BRANCH\` holds the update.
+
+          $body"
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$note"
+            else
+              gh issue create --title "Bundled browser is behind" --body "$note"
+            fi
+            exit 1
+          fi
+          [ "$CODE" = "success" ] && [ "$IMAGE" = "success" ]

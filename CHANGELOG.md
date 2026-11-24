@@ -13,6 +13,7 @@ All notable changes to browserserve are documented here. The format is based on
 
 ### Fixed
 - The weekly browser check (`chrome-update` workflow) failed every run since 2026-10-12 with `curl: (22) ... error: 400`. Playwright no longer publishes arm64 Chromium under `builds/chromium/<revision>/` (the last one there is revision 1243); newer builds are Chrome for Testing archives at `builds/cft/<browserVersion>/linux-arm64/chrome-linux-arm64.zip`. The arm64 pin is now that browser version (`CHROMIUM_ARM64_VERSION`, replacing `CHROMIUM_REVISION`), and the image and `scripts/chrome-update.sh` download from the new location. The arm64 browser is still 153.0.8010.12; its checksum changed because the archive is a different build of the same version.
+- The weekly browser check never opened its pull request: the repository does not let the workflow token open pull requests, so each run filed a new issue instead and the update sat unmerged. The workflow now keeps one `chrome-update` branch, runs the full code checks, builds the image on amd64 and arm64, starts it and runs the smoke, saved-login, session-resume and metadata-block tests against the real browser, then opens or updates a single pull request that lists every check with its result and says whether the update is safe to merge and release. If the pull request still cannot be opened, it comments on the open issue instead of filing another, and the run fails so it is noticed.
 
 ## [0.1.23] - 2026-10-20
 
