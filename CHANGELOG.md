@@ -6,6 +6,11 @@ All notable changes to browserserve are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-11-25
+
+### Changed
+- The image now bundles Chrome 158.0.8127.88 on amd64 (was 154) and Chromium 159.0.8154.6 on arm64 (was 153).
+
 ### Security
 - An instance running without `BROWSERSERVE_TOKEN` now refuses requests whose `Origin` is not `localhost`, `127.x` or `[::1]`, so a web page on another site, or one pointing its own domain at your machine, can no longer open a browser on it. CDP clients such as Puppeteer and Playwright send no `Origin` and are unaffected.
 - A set but empty `BROWSERSERVE_TOKEN` is now a startup error. Before, `?token=` with no value matched it.
